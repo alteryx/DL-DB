@@ -1,16 +1,31 @@
 # import featuretools as ft
 from featuretools.variable_types import Discrete
 # import pandas as pd
-from keras.layers import Dense, Activation, LSTM, GRU, Embedding, Input
+from keras.layers import Dense, Activation, LSTM, GRU, Embedding, Input, Dropout
 from keras.models import Model
 from keras.preprocessing.sequence import pad_sequences
+from sklearn.preprocessing import Imputer
 import keras
 import numpy as np
+import pandas as pd
+import re
+import uuid
 
 RNN_CELLS = {
     'lstm': LSTM,
     'gru': GRU,
 }
+
+
+def feature_name_to_valid_keras_name(fname):
+    return re.sub(r'[(.]', '_', fname).replace(')', '')
+
+
+def map_feature_names_to_valid_keras(fm):
+    name_mapping = {c: feature_name_to_valid_keras_name(c)
+                    for c in fm.columns}
+    fm = fm.rename(columns=name_mapping)
+    return fm, name_mapping
 
 
 def build_keras_rnn(fm, fl, labels,
@@ -53,12 +68,19 @@ def build_keras_rnn(fm, fl, labels,
 
     '''
     fm, categorical_vocab = map_categorical_fm_to_int(fm, fl, categorical_max_vocab)
+    fm, name_mapping = map_feature_names_to_valid_keras(fm)
     sequence_input, sequence_output = sequences_from_fm(fm, labels)
+
     categorical_features = [f for f in fl
                             if issubclass(f.variable_type, Discrete)]
+    numeric_features = [f for f in fl
+                        if not issubclass(f.variable_type, Discrete)]
+
+    num_numeric_features = fm.shape[1] - len(categorical_features)
+    categorical_features = categorical_features[:8]
 
     max_values_per_instance = sequence_input.shape[1]
-    inputs = {}
+    inputs = []
     cat_embedding_layers = []
     for i, f in enumerate(categorical_features):
         feature_max_vocab = len(categorical_vocab[f.get_name()])
@@ -66,21 +88,47 @@ def build_keras_rnn(fm, fl, labels,
             feature_max_vocab = min(feature_max_vocab, categorical_max_vocab)
         cat_input = Input(shape=(max_values_per_instance,),
                           dtype='int32',
-                          name=f.get_name())
-        inputs[f.get_name()] = cat_input
+                          name=name_mapping[f.get_name()])
+        inputs.append(cat_input)
         embedding = Embedding(output_dim=categorical_embedding_size,
                               input_dim=feature_max_vocab,
                               input_length=max_values_per_instance)(cat_input)
         cat_embedding_layers.append(embedding)
 
-    num_numeric_features = fm.shape[1] - len(cat_embedding_layers)
     numeric_input = None
     if num_numeric_features > 0:
         numeric_input_name = 'numeric_input'
         numeric_input = Input(shape=(max_values_per_instance, num_numeric_features),
-                              dtype='int32',
+                              dtype='float32',
                               name=numeric_input_name)
-        inputs[numeric_input_name] = numeric_input
+        inputs.append(numeric_input)
+
+    def input_transform(fm, labels=None):
+        fm, _ = map_categorical_fm_to_int(
+            fm, fl, categorical_max_vocab,
+            cat_mapping=categorical_vocab)
+        fm, _ = map_feature_names_to_valid_keras(fm)
+        _inputs = {}
+        for i, f in enumerate(categorical_features):
+            keras_name = name_mapping[f.get_name()]
+            feature_max_vocab = len(categorical_vocab[f.get_name()])
+            if categorical_max_vocab is not None:
+                feature_max_vocab = min(feature_max_vocab, categorical_max_vocab)
+            _inputs[keras_name] = fm[[keras_name]]
+        _inputs = {k: sequences_from_fm(i, labels, maxlen=max_values_per_instance)[0][:, :, 0]
+                   for k, i in _inputs.items()}
+
+        numeric_inputs, outputs = sequences_from_fm(
+                fm[[name_mapping[f.get_name()] for f in numeric_features]],
+                labels,
+                maxlen=max_values_per_instance)
+        _inputs[numeric_input_name] = numeric_inputs
+
+        if labels is not None:
+            return _inputs, outputs
+        else:
+            return _inputs
+
     rnn_inputs = []
     rnn_input_size = 0
     if len(cat_embedding_layers):
@@ -89,10 +137,13 @@ def build_keras_rnn(fm, fl, labels,
     if numeric_input is not None:
         rnn_inputs.append(numeric_input)
         rnn_input_size += num_numeric_features
-    rnn_inputs = keras.layer.concatenate(rnn_inputs)
+    if len(rnn_inputs) > 1:
+        rnn_inputs = keras.layers.concatenate(rnn_inputs)
+    else:
+        rnn_inputs = rnn_inputs[0]
 
     if isinstance(cell_type, str):
-        cell_type = RNN_CELLS[cell_type]
+        RNNCell = RNN_CELLS[cell_type]
     else:
         RNNCell = cell_type
     prev_layer = rnn_inputs
@@ -112,14 +163,14 @@ def build_keras_rnn(fm, fl, labels,
         prev_layer = layer
     for layer_size in dense_layer_sizes:
         layer = Dense(layer_size,
-                      activation=dense_activation,
-                      dropout=dropout_fraction)(prev_layer)
-        prev_layer = layer
+                      activation=dense_activation)(prev_layer)
+        dropout_layer = Dropout(dropout_fraction)(layer)
+        prev_layer = dropout_layer
 
     is_binary = labels.dtype == np.bool_
     is_numeric = labels.dtype != object
     if is_binary:
-        output_size = 2
+        output_size = 1
         loss = loss or 'binary_crossentropy'
     elif is_numeric:
         output_size = 1
@@ -131,20 +182,66 @@ def build_keras_rnn(fm, fl, labels,
                          name='target')(prev_layer)
     model = Model(inputs=inputs, outputs=output_layer)
     model.compile(optimizer=optimizer, loss=loss)
-    return model
+    return model, input_transform
 
 
-def sequences_from_fm(fm, labels):
+def imputer_transform(X, y=None):
+    """
+    Wraps sklearn's Imputer to make sure it
+    does not drop any features which end
+    up being all nan in the cross-val split
+    """
+    X = X.astype(np.float32)
+    df = pd.DataFrame(X).copy()
+    all_nans = []
+    other_columns = []
+    for i, c in enumerate(df):
+        if df[c].dropna().shape[0] == 0:
+            all_nans.append(c)
+        else:
+            other_columns.append(c)
+
+    df[all_nans] = 0.0
+    imputer1 = Imputer(missing_values='NaN', strategy="most_frequent", axis=0)
+    imputer2 = Imputer(missing_values=np.inf, strategy="most_frequent", axis=0)
+    imputed = imputer1.fit_transform(X)
+    if imputed.shape[1] == 0:
+        imputed = np.zeros(X.shape)
+    imputed2 = imputer2.fit_transform(imputed)
+    df[other_columns] = imputed2.astype(np.float32)
+    return df.values
+
+
+def sequences_from_fm(fm, labels=None, maxlen=None):
     instance_id_name = fm.index.names[0]
+    fm_index = fm.index
+    fm_columns = fm.columns
+    fm_values = imputer_transform(fm)
+    fm = pd.DataFrame(fm_values, columns=fm_columns,
+                      index=fm_index)
     fm.reset_index(instance_id_name, drop=False, inplace=True)
-    fm.reset_index(drop=False, inplace=True)
-    sequences = [group for _, group in fm.groupby(instance_id_name)]
-    sequence_input = pad_sequences(sequences, padding='pre')
+    fm.reset_index(drop=True, inplace=True)
+    if labels is not None:
+        fm['label'] = labels
+
+    # TODO: fillna with mean/most frequent for numerics
+    sequences = [group.drop([instance_id_name], axis=1).fillna(-1)
+                 for _, group in fm.groupby(instance_id_name)]
+
+    output = None
+    if labels is not None:
+        # TODO: non-binary labels
+        # TODO: actually make sequence input/output
+        output = pd.Series([s['label'].iloc[-1] for s in sequences]).astype(int)
+        sequences = [s.drop(['label'], axis=1)
+                     for s in sequences]
+    sequence_input = pad_sequences(sequences, maxlen=maxlen, padding='pre')
     # TODO: resample?
     # TODO: cap length of each time series?
 
     # TODO: labels -> sequence_output
-    return sequence_input, labels
+    return sequence_input, output
+
 
 def map_categorical_fm_to_int(fm, fl, categorical_max_vocab, cat_mapping=None):
     if cat_mapping is None:
@@ -162,6 +259,8 @@ def map_categorical_fm_to_int(fm, fl, categorical_max_vocab, cat_mapping=None):
 
 def map_categorical_series_to_int(input_series, categorical_max_vocab=None, mapping=None):
     input_series_name = input_series.name
+    nan_val = str(uuid.uuid4())
+    input_series = input_series.astype(str).fillna(nan_val)
     val_counts = input_series.value_counts().to_frame()
     index_name = val_counts.index.name
     if index_name is None:
@@ -180,6 +279,7 @@ def map_categorical_series_to_int(input_series, categorical_max_vocab=None, mapp
     if mapping is None:
         mapping = {v: k + 1 for k, v in enumerate(unique)}
         mapping.update({v: 0 for v in unknown})
+        mapping[nan_val] = -1
     numeric = input_series.replace(mapping)
     return numeric, mapping
 
