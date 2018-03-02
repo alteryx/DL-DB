@@ -1,10 +1,10 @@
 # import featuretools as ft
 from featuretools.variable_types import Discrete
 # import pandas as pd
-from keras.layers import Dense, Activation, LSTM, GRU, Embedding, Input, Dropout
+from keras.layers import Dense, LSTM, GRU, Embedding, Input, Dropout
 from keras.models import Model
 from keras.preprocessing.sequence import pad_sequences
-from sklearn.preprocessing import Imputer
+from sklearn.preprocessing import Imputer, MinMaxScaler
 import keras
 import numpy as np
 import pandas as pd
@@ -69,15 +69,24 @@ def build_keras_rnn(fm, fl, labels,
     '''
     fm, categorical_vocab = map_categorical_fm_to_int(fm, fl, categorical_max_vocab)
     fm, name_mapping = map_feature_names_to_valid_keras(fm)
-    sequence_input, sequence_output = sequences_from_fm(fm, labels)
 
     categorical_features = [f for f in fl
                             if issubclass(f.variable_type, Discrete)]
     numeric_features = [f for f in fl
                         if not issubclass(f.variable_type, Discrete)]
 
-    num_numeric_features = fm.shape[1] - len(categorical_features)
-    categorical_features = categorical_features[:8]
+    num_numeric_features = len(numeric_features)
+
+    numeric_columns = [name_mapping[f.get_name()] for f in numeric_features]
+    numeric_fm = fm[numeric_columns]
+    imputer = Imputer(missing_values='NaN', strategy='mean', axis=0)
+    numeric_fm = imputer.fit_transform(numeric_fm)
+    scaler = MinMaxScaler()
+    numeric_fm = scaler.fit_transform(numeric_fm)
+    numeric_fm = pd.DataFrame(numeric_fm, index=fm.index,
+                              columns=numeric_columns)
+
+    sequence_input, sequence_output = sequences_from_fm(numeric_fm, labels)
 
     max_values_per_instance = sequence_input.shape[1]
     inputs = []
@@ -103,6 +112,7 @@ def build_keras_rnn(fm, fl, labels,
                               name=numeric_input_name)
         inputs.append(numeric_input)
 
+
     def input_transform(fm, labels=None):
         fm, _ = map_categorical_fm_to_int(
             fm, fl, categorical_max_vocab,
@@ -118,8 +128,14 @@ def build_keras_rnn(fm, fl, labels,
         _inputs = {k: sequences_from_fm(i, labels, maxlen=max_values_per_instance)[0][:, :, 0]
                    for k, i in _inputs.items()}
 
+        numeric_fm = fm[numeric_columns]
+        numeric_fm = imputer.transform(numeric_fm)
+        numeric_fm = scaler.transform(numeric_fm)
+        numeric_fm = pd.DataFrame(numeric_fm, index=fm.index,
+                                  columns=numeric_columns)
+
         numeric_inputs, outputs = sequences_from_fm(
-                fm[[name_mapping[f.get_name()] for f in numeric_features]],
+                numeric_fm,
                 labels,
                 maxlen=max_values_per_instance)
         _inputs[numeric_input_name] = numeric_inputs
@@ -167,8 +183,10 @@ def build_keras_rnn(fm, fl, labels,
         dropout_layer = Dropout(dropout_fraction)(layer)
         prev_layer = dropout_layer
 
-    is_binary = labels.dtype == np.bool_
+    is_binary = ((labels.dtype == np.bool_) or
+                 (labels.dtype == int and pd.Series(labels).nunique() == 2))
     is_numeric = labels.dtype != object
+
     if is_binary:
         output_size = 1
         loss = loss or 'binary_crossentropy'
@@ -221,8 +239,6 @@ def sequences_from_fm(fm, labels=None, maxlen=None):
                       index=fm_index)
     fm.reset_index(instance_id_name, drop=False, inplace=True)
     fm.reset_index(drop=True, inplace=True)
-    if labels is not None:
-        fm['label'] = labels
 
     # TODO: fillna with mean/most frequent for numerics
     sequences = [group.drop([instance_id_name], axis=1).fillna(-1)
@@ -231,10 +247,7 @@ def sequences_from_fm(fm, labels=None, maxlen=None):
     output = None
     if labels is not None:
         # TODO: non-binary labels
-        # TODO: actually make sequence input/output
-        output = pd.Series([s['label'].iloc[-1] for s in sequences]).astype(int)
-        sequences = [s.drop(['label'], axis=1)
-                     for s in sequences]
+        output = pd.Series(labels).astype(int)
     sequence_input = pad_sequences(sequences, maxlen=maxlen, padding='pre')
     # TODO: resample?
     # TODO: cap length of each time series?
@@ -257,29 +270,41 @@ def map_categorical_fm_to_int(fm, fl, categorical_max_vocab, cat_mapping=None):
             cat_mapping[f.get_name()] = new_mapping
     return new_fm, cat_mapping
 
+
 def map_categorical_series_to_int(input_series, categorical_max_vocab=None, mapping=None):
-    input_series_name = input_series.name
-    nan_val = str(uuid.uuid4())
+    if mapping is None:
+        nan_val = str(uuid.uuid4())
+    else:
+        nan_val = [k for k, v in mapping.items()
+                   if v == -1][0]
+
     input_series = input_series.astype(str).fillna(nan_val)
-    val_counts = input_series.value_counts().to_frame()
-    index_name = val_counts.index.name
-    if index_name is None:
-        if 'index' in val_counts.columns:
-            index_name = 'level_0'
-        else:
-            index_name = 'index'
-    val_counts.reset_index(inplace=True)
-    val_counts = val_counts.sort_values([input_series_name, index_name],
-                                        ascending=False)
-    val_counts.set_index(index_name, inplace=True)
-    full_mapping = val_counts.index.tolist()
-    unique = val_counts.head(categorical_max_vocab).index.tolist()
-    unknown = [v for v in full_mapping if v not in unique]
 
     if mapping is None:
+        input_series_name = input_series.name
+        val_counts = input_series.value_counts().to_frame()
+        index_name = val_counts.index.name
+        if index_name is None:
+            if 'index' in val_counts.columns:
+                index_name = 'level_0'
+            else:
+                index_name = 'index'
+        val_counts.reset_index(inplace=True)
+        val_counts = val_counts.sort_values([input_series_name, index_name],
+                                            ascending=False)
+        val_counts.set_index(index_name, inplace=True)
+        full_mapping = val_counts.index.tolist()
+        unique = val_counts.head(categorical_max_vocab - 1).index.tolist()
+        unknown = [v for v in full_mapping if v not in unique]
+
         mapping = {v: k + 1 for k, v in enumerate(unique)}
         mapping.update({v: 0 for v in unknown})
         mapping[nan_val] = -1
+    else:
+        unique_vals = input_series.unique()
+        new_mapping = {u: 0 for u in unique_vals}
+        new_mapping.update(mapping)
+        mapping = new_mapping
     numeric = input_series.replace(mapping)
     return numeric, mapping
 
