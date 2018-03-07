@@ -9,9 +9,9 @@ import pandas as pd
 import numpy as np
 import featuretools as ft
 from featuretools.selection import remove_low_information_features
-from model.build_keras_rnn import DLDB
-from tdfs.utils import create_labels, sample_labels
-from tdfs.tdfs import make_temporal_cutoffs
+from dldb.dldb import DLDB
+from testing_utils import construct_retail_example
+
 
 def f1_macro(actual, predicted):
     return f1_score(actual, predicted, average='macro')
@@ -75,50 +75,22 @@ def test_ecommerce():
     return scores
 
 
-def test_retail_binary():
-    es = ft.demo.load_retail()
-    labels = create_labels(es,
-                           min_training_data='8 days',
-                           lead='7 days',
-                           window='30 days',
-                           reduce='sum',
-                           binarize=None,
-                           iterate_by=None)
-    labels_binary = labels.copy()
-    labels_binary['label'] = labels_binary['label'] > 300
-    sampled = sample_labels(labels_binary)
-    cutoffs = make_temporal_cutoffs(sampled[['CustomerID', 'time']],
-                                    window_size='30d',
-                                    num_windows=5)
-    baseline_cutoffs = sampled[['CustomerID', 'time']]
-    sampled = sampled[['CustomerID', 'label']]
-
-    fm, fl = ft.dfs(entityset=es,
-                    cutoff_time=cutoffs,
-                    target_entity="customers",
-                    cutoff_time_in_index=True,
-                    verbose=True)
-    fm.sort_index(inplace=True)
-
-    fm = (fm.reset_index('CustomerID', drop=False)
-            .reset_index(drop=False)
-            .merge(sampled, on='CustomerID',
-                   how='left')
-            .set_index('CustomerID')
-            .set_index('time', append=True))
-
-    train_fm, test_fm = train_test_split(
-        fm, test_size=0.1, shuffle=False)
-    train_labels = (train_fm['label']
-                    .reset_index('CustomerID', drop=False)
-                    .drop_duplicates('CustomerID')
-                    .set_index('CustomerID'))['label'].values
-    test_labels = (test_fm['label']
-                   .reset_index('CustomerID', drop=False)
-                   .drop_duplicates('CustomerID')
-                   .set_index('CustomerID'))['label'].values
-    del train_fm['label']
-    del test_fm['label']
+def test_retail_binary(fm_file='retail_binary_files/fm.csv',
+                       labels_file='retail_binary_files/labels.csv',
+                       fl_file='retail_binary_files/fl.p'):
+    fm, labels, fl = construct_retail_example(fm_file, labels_file, fl_file)
+    baseline_fm = (fm.reset_index('CustomerID', drop=False)
+                     .drop_duplicates('CustomerID', keep='last')
+                     .set_index('CustomerID'))
+    baseline_fm, baseline_fl = ft.encode_features(baseline_fm, fl)
+    baseline_fm, baseline_fl = remove_low_information_features(baseline_fm, baseline_fl)
+    train_customers, test_customers = train_test_split(baseline_fm.index.values, shuffle=True, test_size=0.1)
+    train_labels = labels.loc[train_customers]
+    test_labels = labels.loc[test_customers]
+    train_fm = fm.loc[(train_customers, slice(None)), :]
+    test_fm = fm.loc[(test_customers, slice(None)), :]
+    baseline_train_fm = baseline_fm.loc[train_customers, :]
+    baseline_test_fm = baseline_fm.loc[test_customers, :]
 
     dl_model = DLDB(
         regression=False,
@@ -128,48 +100,18 @@ def test_retail_binary():
         categorical_max_vocab=10)
     dl_model.compile(train_fm, fl)
     dl_model.fit(
-        train_fm, train_labels,
-        validation_split=0.1,
-        epochs=10,
-        batch_size=32)
+            train_fm,
+            train_labels,
+            validation_split=0.1,
+            epochs=10,
+            batch_size=32)
     predictions = dl_model.predict(test_fm)
     score = roc_auc_score(test_labels, predictions)
 
-    baseline_fm, baseline_fl = ft.dfs(
-        entityset=es,
-        cutoff_time=baseline_cutoffs,
-        target_entity="customers",
-        cutoff_time_in_index=True,
-        verbose=True)
-    baseline_fm, baseline_fl = ft.encode_features(baseline_fm, baseline_fl)
-    baseline_fm, baseline_fl = remove_low_information_features(
-        baseline_fm, baseline_fl)
-    baseline_fm.sort_index(inplace=True)
-
-    baseline_fm = (baseline_fm.reset_index('CustomerID', drop=False)
-                              .reset_index(drop=False)
-                              .merge(sampled, on='CustomerID',
-                                     how='left')
-                              .set_index('CustomerID')
-                              .set_index('time', append=True))
-
-    baseline_train_fm, baseline_test_fm = train_test_split(
-        baseline_fm, test_size=0.1, shuffle=False)
-    baseline_train_labels = (
-            baseline_train_fm['label'].reset_index('CustomerID', drop=False)
-                                      .drop_duplicates('CustomerID')
-                                      .set_index('CustomerID')
-            )['label'].values
-    baseline_test_labels = (
-            baseline_test_fm['label'].reset_index('CustomerID', drop=False)
-                                     .drop_duplicates('CustomerID')
-                                     .set_index('CustomerID'))['label'].values
-    del baseline_train_fm['label']
-    del baseline_test_fm['label']
     baseline_scores = score_baseline_pipeline(baseline_train_fm,
-                                              baseline_train_labels,
+                                              train_labels,
                                               baseline_test_fm,
-                                              baseline_test_labels)
+                                              test_labels)
     return score, baseline_scores
 
 
@@ -228,7 +170,7 @@ def score_baseline_pipeline(X_train, y_train, X_test, y_test):
 
 
 if __name__ == '__main__':
-    scores = test_ecommerce()
-    #score, baseline_scores = test_retail_binary()
+    #scores = test_ecommerce()
+    score, baseline_scores = test_retail_binary()
     print("ROC score:", score)
     print("Baseline ROC scores (using RF, SVM, LogisticRegression):", baseline_scores)

@@ -175,10 +175,10 @@ class DLDB(object):
             if i == len(self.recurrent_layer_sizes) - 1:
                 return_sequences = False
             layer = self.RNNCell(layer_size,
-                            return_sequences=return_sequences,
-                            dropout=self.dropout_fraction,
-                            recurrent_dropout=self.recurrent_dropout_fraction,
-                            input_shape=_rnn_input_shape)
+                                 return_sequences=return_sequences,
+                                 dropout=self.dropout_fraction,
+                                 recurrent_dropout=self.recurrent_dropout_fraction,
+                                 input_shape=_rnn_input_shape)
             layer = layer(prev_layer)
             prev_layer = layer
         for layer_size in self.dense_layer_sizes:
