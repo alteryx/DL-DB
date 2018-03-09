@@ -1,5 +1,5 @@
-from tdfs.tdfs import tdfs
-from tdfs.utils import create_labels, sample_labels
+from dldb import tdfs
+from .labeling_utils import create_labels, sample_labels
 import pandas as pd
 import featuretools as ft
 import os

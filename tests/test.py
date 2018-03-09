@@ -9,8 +9,8 @@ import pandas as pd
 import numpy as np
 import featuretools as ft
 from featuretools.selection import remove_low_information_features
-from dldb.dldb import DLDB
-from testing_utils import construct_retail_example
+from dldb import DLDB
+from .testing_utils import construct_retail_example
 
 
 def f1_macro(actual, predicted):
@@ -115,7 +115,7 @@ def test_retail_binary(fm_file='retail_binary_files/fm.csv',
     return score, baseline_scores
 
 
-def score_baseline_pipeline(X_train, y_train, X_test, y_test):
+def score_baseline_pipeline(X_train, y_train, X_test, y_test, **hyperparams):
     feature_names = X_train.columns
     imputer = Imputer(missing_values='NaN', strategy='mean', axis=0)
     X_train = imputer.fit_transform(X_train)
@@ -124,8 +124,8 @@ def score_baseline_pipeline(X_train, y_train, X_test, y_test):
     X_train = pd.DataFrame(X_train, columns=feature_names)
 
     original_train_fm = X_train
-    select_n_features = 200
-    selector_rf = RandomForestClassifier(n_estimators=1000,
+    select_n_features = hyperparams.get('select_n_features', 200)
+    selector_rf = RandomForestClassifier(n_estimators=hyperparams.get('selector_n_estimators', 1000),
                                          class_weight='balanced',
                                          n_jobs=-1,
                                          verbose=True)
@@ -139,7 +139,7 @@ def score_baseline_pipeline(X_train, y_train, X_test, y_test):
 
     # Train another Random Forest on selected features as our model
 
-    model_rf = RandomForestClassifier(n_estimators=400,
+    model_rf = RandomForestClassifier(n_estimators=hyperparams.get('n_estimators', 400),
                                       class_weight='balanced',
                                       n_jobs=-1)
     model_rf.fit(X_train, y_train)

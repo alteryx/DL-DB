@@ -1,8 +1,8 @@
-from featuretools.variable_types import Discrete
 from keras.layers import Dense, LSTM, GRU, Embedding, Input, Dropout
 from keras.models import Model
 from keras.preprocessing.sequence import pad_sequences
 from sklearn.preprocessing import Imputer, MinMaxScaler, LabelBinarizer
+from featuretools.variable_types import Discrete, Boolean
 import keras
 import numpy as np
 import pandas as pd
@@ -87,33 +87,42 @@ class DLDB(object):
         self.max_values_per_instance = None
         self.name_mapping = None
 
-    def compile(self, fm, fl):
+    def compile(self, fm, fl=None, categorical_feature_names=None):
         '''
         fm (pd.DataFrame): Time-varying feature matrix with multiple time points per instance. Can contain both categorical
-            as well as numeric features.
-        fl (list[ft.PrimitiveBase]): List of feature objects representing each column in fm
-        '''
-        self.categorical_feature_names = [f.get_name() for f in fl
-                                          if issubclass(f.variable_type, Discrete)]
+            as well as numeric features. Index should either be just the instance_id, or a MultiIndex with the instance_id and time,
+            with the instance_id as the first level.
+        categorical_feature_names (list[ft.PrimitiveBase], optional): List of feature names that are categorical
+        fl (list[ft.PrimitiveBase], optional): List of feature objects representing each column in fm. Will be used if
+            categorical_feature_names not provided.
 
-        # TODO: see if i can pull out mapping
+        Note: If neither categorical_feature_names not fl provided, will assume all features of dtype object
+        are categorical
+
+        Assumes all provided features can be treated as either categorical or numeric (including Booleans).
+        If a data type exists in fm other than a numeric or object type (such as a datetime), then make sure to
+        include that feature in categorical_feature_names to treat it as a categorical.
+        '''
+
+        if categorical_feature_names is not None:
+            self.categorical_feature_names = categorical_feature_names
+        elif fl is not None:
+            self.categorical_feature_names = [f.get_name() for f in fl
+                                              if issubclass(f.variable_type, Discrete)
+                                              and not f.variable_type == Boolean]
+        else:
+            self.categorical_feature_names = [c for c in fm.columns if fm[c].dtype == object]
+
         self.categorical_vocab = self.gen_categorical_mapping(fm)
         fm = self.map_categorical_fm_to_int(fm)
 
         self.name_mapping = {c: feature_name_to_valid_keras_name(c)
                              for c in fm.columns}
+
+        self.numeric_columns = [self.name_mapping[f] for f in fm.columns
+                                if not f in self.categorical_feature_names]
+
         fm = fm.rename(columns=self.name_mapping)
-
-        self.numeric_columns = [self.name_mapping[f.get_name()] for f in fl
-                                if not issubclass(f.variable_type, Discrete)]
-        num_numeric_features = len(self.numeric_columns)
-        numeric_fm = fm[self.numeric_columns]
-
-        numeric_fm = imputer_transform(numeric_fm)
-        self.scaler = MinMaxScaler()
-        numeric_fm = self.scaler.fit_transform(numeric_fm)
-        numeric_fm = pd.DataFrame(numeric_fm, index=fm.index,
-                                  columns=self.numeric_columns)
 
         instance_id_name = fm.index.names[0]
         self.max_values_per_instance = (
@@ -127,7 +136,8 @@ class DLDB(object):
         for i, f in enumerate(self.categorical_feature_names):
             feature_max_vocab = len(self.categorical_vocab[f])
             if self.categorical_max_vocab is not None:
-                feature_max_vocab = min(feature_max_vocab, self.categorical_max_vocab)
+                feature_max_vocab = min(feature_max_vocab,
+                                        self.categorical_max_vocab)
             cat_input = Input(shape=(self.max_values_per_instance,),
                               dtype='int32',
                               name=self.name_mapping[f])
@@ -138,9 +148,15 @@ class DLDB(object):
             cat_embedding_layers.append(embedding)
 
         numeric_input = None
-        if num_numeric_features > 0:
+        if len(self.numeric_columns) > 0:
+            numeric_fm = fm[self.numeric_columns]
+
+            numeric_fm = imputer_transform(numeric_fm)
+            self.scaler = MinMaxScaler()
+            self.scaler.fit(numeric_fm)
+
             numeric_input = Input(shape=(self.max_values_per_instance,
-                                         num_numeric_features),
+                                         len(self.numeric_columns)),
                                   dtype='float32',
                                   name=self.numeric_input_name)
             inputs.append(numeric_input)
@@ -156,7 +172,7 @@ class DLDB(object):
                                len(cat_embedding_layers))
         if numeric_input is not None:
             rnn_inputs.append(numeric_input)
-            rnn_input_size += num_numeric_features
+            rnn_input_size += len(self.numeric_columns)
         if len(rnn_inputs) > 1:
             rnn_inputs = keras.layers.concatenate(rnn_inputs)
         else:
@@ -212,14 +228,15 @@ class DLDB(object):
         inputs = {k: self.sequences_from_fm(i)[:, :, 0]
                   for k, i in inputs.items()}
 
-        numeric_fm = fm[self.numeric_columns]
-        numeric_fm = imputer_transform(numeric_fm)
-        numeric_fm = self.scaler.transform(numeric_fm)
-        numeric_fm = pd.DataFrame(numeric_fm, index=fm.index,
-                                  columns=self.numeric_columns)
+        if self.numeric_columns:
+            numeric_fm = fm[self.numeric_columns]
+            numeric_fm = imputer_transform(numeric_fm)
+            numeric_fm = self.scaler.transform(numeric_fm)
+            numeric_fm = pd.DataFrame(numeric_fm, index=fm.index,
+                                      columns=self.numeric_columns)
 
-        numeric_inputs = self.sequences_from_fm(numeric_fm)
-        inputs[self.numeric_input_name] = numeric_inputs
+            numeric_inputs = self.sequences_from_fm(numeric_fm)
+            inputs[self.numeric_input_name] = numeric_inputs
 
         if labels is not None:
             if not self.regression:
@@ -236,19 +253,30 @@ class DLDB(object):
                                     for i in predictions.argmax(axis=1)])
         return predictions
 
-    def fit(self, fm, labels, validation_split=None,
-            epochs=1, batch_size=32):
+    def fit(self, fm, labels,
+            epochs=1, batch_size=32,
+            **kwargs):
+        if kwargs.get('verbose', 1) > 0:
+            print("Transforming input matrix into numeric sequences")
         inputs, outputs = self.input_transform(fm, labels)
+        if kwargs.get('verbose', 1) > 0:
+            print("Fitting Keras model")
         self.model.fit(
             inputs,
             outputs,
-            validation_split=validation_split,
             epochs=epochs,
-            batch_size=batch_size)
+            batch_size=batch_size,
+            **kwargs)
 
-    def predict(self, fm):
+    def predict(self, fm, verbose=1):
+        if verbose > 0:
+            print("Transforming input matrix into numeric sequences")
         inputs = self.input_transform(fm)
+        if verbose > 0:
+            print("Predicting using Keras model")
         predictions = self.model.predict(inputs)
+        if verbose > 0:
+            print("Transforming outputs")
         return self.output_transform(predictions)
 
     def sequences_from_fm(self, fm):
@@ -262,7 +290,6 @@ class DLDB(object):
                                        maxlen=self.max_values_per_instance,
                                        padding='pre')
         return sequence_input
-
 
     def map_categorical_fm_to_int(self, fm):
         new_fm = fm.copy()
@@ -341,6 +368,3 @@ def imputer_transform(X, y=None):
     imputed2 = imputer2.fit_transform(imputed)
     df[other_columns] = imputed2.astype(np.float32)
     return df.values
-
-
-

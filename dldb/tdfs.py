@@ -2,8 +2,8 @@ import featuretools as ft
 import pandas as pd
 
 
-def tdfs(target_entity,
-         entityset,
+def tdfs(entityset,
+         target_entity,
          cutoffs,
          window_size=None,
          training_window=None,
