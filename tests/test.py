@@ -10,7 +10,7 @@ import numpy as np
 import featuretools as ft
 from featuretools.selection import remove_low_information_features
 from dldb import DLDB
-from .testing_utils import construct_retail_example
+from testing_utils import construct_retail_example
 
 
 def f1_macro(actual, predicted):
@@ -95,15 +95,15 @@ def test_retail_binary(fm_file='retail_binary_files/fm.csv',
     dl_model = DLDB(
         regression=False,
         classes=[False, True],
-        recurrent_layer_sizes=(10,),
-        dense_layer_sizes=(10,),
+        recurrent_layer_sizes=(32,),
+        dense_layer_sizes=(32,32),
         categorical_max_vocab=10)
     dl_model.compile(train_fm, fl)
     dl_model.fit(
             train_fm,
             train_labels,
             validation_split=0.1,
-            epochs=10,
+            epochs=1,
             batch_size=32)
     predictions = dl_model.predict(test_fm)
     score = roc_auc_score(test_labels, predictions)

@@ -5,8 +5,8 @@ from sklearn.model_selection import StratifiedKFold
 import featuretools as ft
 from featuretools.selection import remove_low_information_features
 import numpy as np
-from .testing_utils import construct_retail_example
-from .test import score_baseline_pipeline
+from testing_utils import construct_retail_example
+from test import score_baseline_pipeline
 from dldb import DLDB
 
 # Best after 100 runs:
@@ -167,4 +167,4 @@ def score_model_baseline(fm, labels, fl, hyperparams):
 
 
 if __name__ == '__main__':
-    test_retail_with_atm(baseline=True)
+    test_retail_with_atm(baseline=False)
