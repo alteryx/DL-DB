@@ -4,7 +4,7 @@ import pandas as pd
 
 def tdfs(entityset,
          target_entity,
-         cutoffs,
+         cutoffs=None,
          features_only=False,
          window_size=None,
          training_window=None,
@@ -16,24 +16,28 @@ def tdfs(entityset,
     - window_size and num_windows
     - window_size and start
     - num_windows and start
+
+    If features_only is False, cutoffs must be provided
     '''
-    index = entityset[target_entity].index
-    instance_id_column = 'instance_id'
-    if 'instance_id' in cutoffs.columns:
-        instance_ids = cutoffs['instance_id']
-    elif index in cutoffs:
-        instance_ids = cutoffs[index]
-        instance_id_column = index
-    else:
-        instance_ids = cutoffs.iloc[:, 0]
-        instance_id_column = cutoffs.columns[0]
-    time_column = 'time'
-    if time_column not in cutoffs:
-        not_instance_id = [c for c in cutoffs.columns if c != instance_id_column]
-        time_column = not_instance_id[0]
-    times = cutoffs[time_column]
-    temporal_cutoffs = make_temporal_cutoffs(instance_ids, times, window_size,
-                                             num_windows, start)
+    temporal_cutoffs = None
+    if not features_only:
+        index = entityset[target_entity].index
+        instance_id_column = 'instance_id'
+        if 'instance_id' in cutoffs.columns:
+            instance_ids = cutoffs['instance_id']
+        elif index in cutoffs:
+            instance_ids = cutoffs[index]
+            instance_id_column = index
+        else:
+            instance_ids = cutoffs.iloc[:, 0]
+            instance_id_column = cutoffs.columns[0]
+        time_column = 'time'
+        if time_column not in cutoffs:
+            not_instance_id = [c for c in cutoffs.columns if c != instance_id_column]
+            time_column = not_instance_id[0]
+        times = cutoffs[time_column]
+        temporal_cutoffs = make_temporal_cutoffs(instance_ids, times, window_size,
+                                                 num_windows, start)
     result = ft.dfs(entityset=entityset,
                     features_only=features_only,
                     cutoff_time=temporal_cutoffs,

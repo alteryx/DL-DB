@@ -1,6 +1,7 @@
-from keras.layers import Dense, LSTM, GRU, Embedding, Input, Dropout
+from keras.layers import Dense, LSTM, GRU, Embedding, Input, Dropout, BatchNormalization, Conv1D, MaxPooling1D
 from keras.models import Model
 from keras.preprocessing.sequence import pad_sequences
+import keras as K
 from sklearn.preprocessing import Imputer, MinMaxScaler, LabelBinarizer
 from featuretools.variable_types import Discrete, Boolean
 import keras
@@ -21,6 +22,7 @@ def feature_name_to_valid_keras_name(fname):
 
 class DLDB(object):
     numeric_input_name = 'numeric_input'
+
     def __init__(self,
                  regression=False,
                  classes=None,
@@ -32,6 +34,10 @@ class DLDB(object):
                  recurrent_dropout_fraction=0.2,
                  categorical_max_vocab=None,
                  categorical_embedding_size=10,
+                 conv_kernel_dim=None,
+                 conv_activation='relu',
+                 pool_size=4,
+                 conv_batch_normalization=False,
                  loss=None,
                  metrics=None,
                  optimizer='rmsprop'):
@@ -80,12 +86,17 @@ class DLDB(object):
         self.recurrent_dropout_fraction = recurrent_dropout_fraction
         self.categorical_max_vocab = categorical_max_vocab
         self.categorical_embedding_size = categorical_embedding_size
+        self.conv_kernel_dim = conv_kernel_dim
+        self.conv_activation = conv_activation
+        self.pool_size = pool_size
+        self.conv_batch_normalization = conv_batch_normalization
         self.metrics = metrics
         self.optimizer = optimizer
         self.categorical_feature_names = None
         self.categorical_vocab = None
         self.max_values_per_instance = None
         self.name_mapping = None
+
 
     def compile(self, fm, fl=None, categorical_feature_names=None):
         '''
@@ -131,6 +142,18 @@ class DLDB(object):
               .count()
               .max())
 
+        if len(self.numeric_columns) > 0:
+            numeric_fm = fm[self.numeric_columns]
+
+            numeric_fm = imputer_transform(numeric_fm)
+            self.scaler = MinMaxScaler()
+            self.scaler.fit(numeric_fm)
+        if not self.regression:
+            self.lb = LabelBinarizer().fit(self.classes)
+
+        self._compile_keras_model()
+
+    def _compile_keras_model(self):
         inputs = []
         cat_embedding_layers = []
         for i, f in enumerate(self.categorical_feature_names):
@@ -149,20 +172,11 @@ class DLDB(object):
 
         numeric_input = None
         if len(self.numeric_columns) > 0:
-            numeric_fm = fm[self.numeric_columns]
-
-            numeric_fm = imputer_transform(numeric_fm)
-            self.scaler = MinMaxScaler()
-            self.scaler.fit(numeric_fm)
-
             numeric_input = Input(shape=(self.max_values_per_instance,
                                          len(self.numeric_columns)),
                                   dtype='float32',
                                   name=self.numeric_input_name)
             inputs.append(numeric_input)
-
-        if not self.regression:
-            self.lb = LabelBinarizer().fit(self.classes)
 
         rnn_inputs = []
         rnn_input_size = 0
@@ -177,6 +191,17 @@ class DLDB(object):
             rnn_inputs = keras.layers.concatenate(rnn_inputs)
         else:
             rnn_inputs = rnn_inputs[0]
+
+        if self.conv_kernel_dim is not None:
+
+            conv_layer = Conv1D(self.categorical_embedding_size//2,
+                                self.conv_kernel_dim,
+                                activation=self.conv_activation)
+            if self.conv_batch_normalization:
+                rnn_inputs = BatchNormalization()(rnn_inputs)
+            conv_layer = conv_layer(rnn_inputs)
+            mp_layer = MaxPooling1D(pool_size=self.pool_size)
+            rnn_inputs = mp_layer(conv_layer)
 
         if isinstance(self.cell_type, str):
             self.RNNCell = RNN_CELLS[self.cell_type]
@@ -218,13 +243,10 @@ class DLDB(object):
             if self.categorical_max_vocab is not None:
                 feature_max_vocab = min(feature_max_vocab,
                                         self.categorical_max_vocab)
-            try:
-                inputs[keras_name] = pd.DataFrame(imputer_transform(
-                                                    fm[[keras_name]]),
-                                                  columns=[keras_name],
-                                                  index=fm.index)
-            except:
-                import pdb; pdb.set_trace()
+            inputs[keras_name] = pd.DataFrame(imputer_transform(
+                                                fm[[keras_name]]),
+                                              columns=[keras_name],
+                                              index=fm.index)
         inputs = {k: self.sequences_from_fm(i)[:, :, 0]
                   for k, i in inputs.items()}
 
@@ -255,7 +277,11 @@ class DLDB(object):
 
     def fit(self, fm, labels,
             epochs=1, batch_size=32,
+            reset_model=True,
             **kwargs):
+        if reset_model:
+            self._compile_keras_model()
+
         if kwargs.get('verbose', 1) > 0:
             print("Transforming input matrix into numeric sequences")
         inputs, outputs = self.input_transform(fm, labels)
