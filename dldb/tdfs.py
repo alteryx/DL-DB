@@ -1,26 +1,63 @@
 import featuretools as ft
+from featuretools.entityset import EntitySet
 import pandas as pd
 
 
-def tdfs(entityset,
-         target_entity,
+def tdfs(entities=None,
+         relationships=None,
+         entityset=None,
+         target_entity=None,
          cutoffs=None,
          features_only=False,
          window_size=None,
-         training_window=None,
          num_windows=None,
          start=None,
          **kwargs):
     '''
-    Must specify 2 of the optional args:
+    Must specify 2 of the following optional args:
     - window_size and num_windows
     - window_size and start
     - num_windows and start
 
-    If features_only is False, cutoffs must be provided
+    **kwargs will be passed to underlying featuretools.dfs() call.
+    Refer to featuretools documentation for a listing and explanation of
+    all possible optional arguments.
+
+    Args:
+        entities (dict[str -> tuple(pd.DataFrame, str, str)]): Dictionary of
+            entities. Entries take the format
+            {entity id -> (dataframe, id column, (time_column))}.
+
+        relationships (list[(str, str, str, str)]): List of relationships
+            between entities. List items are a tuple with the format
+            (parent entity id, parent variable, child entity id, child variable).
+
+        entityset (EntitySet): An already initialized entityset. Required if
+            entities and relationships are not defined.
+
+        target_entity (str): Entity id of entity on which to make predictions.
+
+        cutoffs (pd.DataFrame or Datetime): Specifies times at which to
+            calculate each instance. Can either be a DataFrame with
+            'instance_id' and 'time' columns, or a DataFrame with the name of the
+            index variable in the target entity and a time column
+            If the dataframe has more than two columns, any additional columns will be added to the resulting
+            feature matrix.
+
+        features_only (bool, optional): If True, returns the list of
+            features without calculating the feature matrix. If False,
+            cutoffs must be provided
+
+        window_size (str or pd.Timedelta or pd.DateOffset, optional): amount of time between each cutoff time in the created time series
+
+        start (datetime.datetime or pd.Timestamp, optional): first cutoff time in the created time series
+
+        num_windows (int, optional): number of cutoff times in the created time series
     '''
     temporal_cutoffs = None
     if not features_only:
+        if not isinstance(entityset, EntitySet):
+            entityset = EntitySet("dfs", entities, relationships)
         index = entityset[target_entity].index
         instance_id_column = 'instance_id'
         if 'instance_id' in cutoffs.columns:
@@ -43,7 +80,6 @@ def tdfs(entityset,
                     cutoff_time=temporal_cutoffs,
                     target_entity=target_entity,
                     cutoff_time_in_index=True,
-                    training_window=training_window,
                     **kwargs)
     if not features_only:
         fm, fl = result

@@ -123,7 +123,6 @@ def score_model(fm, labels, fl, hyperparams):
         recurrent_layer_sizes=hyperparams['recurrent_layer_sizes'],
         dense_layer_sizes=hyperparams['dense_layer_sizes'],
         categorical_max_vocab=hyperparams['categorical_max_vocab'])
-    # TODO: cheating a bit, put back in CV later
     dl_model.compile(fm, fl)
 
     for train_index, test_index in splitter.split(labels, labels):

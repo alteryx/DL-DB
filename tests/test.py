@@ -170,7 +170,7 @@ def score_baseline_pipeline(X_train, y_train, X_test, y_test, **hyperparams):
 
 
 if __name__ == '__main__':
-    #scores = test_ecommerce()
+    scores = test_ecommerce()
     score, baseline_scores = test_retail_binary()
     print("ROC score:", score)
     print("Baseline ROC scores (using RF, SVM, LogisticRegression):", baseline_scores)

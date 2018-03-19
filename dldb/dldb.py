@@ -1,7 +1,6 @@
 from keras.layers import Dense, LSTM, GRU, Embedding, Input, Dropout, BatchNormalization, Conv1D, MaxPooling1D
 from keras.models import Model
 from keras.preprocessing.sequence import pad_sequences
-import keras as K
 from sklearn.preprocessing import Imputer, MinMaxScaler, LabelBinarizer
 from featuretools.variable_types import Discrete, Boolean
 import keras
@@ -55,6 +54,10 @@ class DLDB(object):
             each categorical variable, and will set the rest to a single "unknown" category.
         categorical_embedding_size (int, optional): If categorical features provided, will embed them each into
             a dense vector of this size
+        conv_kernel_dim (int, optional): If provided, will add a 1D Convolutional layer prior to the recurrent layers
+        conv_activation (str, optional): Activation to use for the optional convolutional layer
+        pool_size (int, optional): Size of max pooling layer that will be used after the convolutional layer if it is present
+        conv_batch_normalization (bool, optional): If true, will apply batch normalization to the outputs of the convolutional layer
         loss (str, optional): loss function to use for gradient calculation. If labels is a Boolean Series, defaults
             to `binary_crossentropy`. If labels is an object (multiclass), defaults to `categorical_crossentropy`.
             If labels is numeric, defaults to 'mse'.
@@ -97,17 +100,16 @@ class DLDB(object):
         self.max_values_per_instance = None
         self.name_mapping = None
 
-
     def compile(self, fm, fl=None, categorical_feature_names=None):
         '''
         fm (pd.DataFrame): Time-varying feature matrix with multiple time points per instance. Can contain both categorical
             as well as numeric features. Index should either be just the instance_id, or a MultiIndex with the instance_id and time,
             with the instance_id as the first level.
-        categorical_feature_names (list[ft.PrimitiveBase], optional): List of feature names that are categorical
         fl (list[ft.PrimitiveBase], optional): List of feature objects representing each column in fm. Will be used if
             categorical_feature_names not provided.
+        categorical_feature_names (list[str], optional): List of feature names that are categorical
 
-        Note: If neither categorical_feature_names not fl provided, will assume all features of dtype object
+        Note: If neither categorical_feature_names nor fl provided, will assume all features of dtype object
         are categorical
 
         Assumes all provided features can be treated as either categorical or numeric (including Booleans).
@@ -131,7 +133,7 @@ class DLDB(object):
                              for c in fm.columns}
 
         self.numeric_columns = [self.name_mapping[f] for f in fm.columns
-                                if not f in self.categorical_feature_names]
+                                if f not in self.categorical_feature_names]
 
         fm = fm.rename(columns=self.name_mapping)
 
@@ -329,6 +331,9 @@ class DLDB(object):
 
     def gen_categorical_mapping(self, fm):
         categorical_vocab = {}
+        if self.categorical_max_vocab is None:
+            self.categorical_max_vocab = max(fm[f].dropna().nunique()
+                                             for f in fm)
         for f in self.categorical_feature_names:
             nan_val = str(uuid.uuid4())
             val_counts = (fm[f].astype(str)
