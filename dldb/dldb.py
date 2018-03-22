@@ -153,6 +153,12 @@ class DLDB(object):
         if not self.regression:
             self.lb = LabelBinarizer().fit(self.classes)
 
+        self.fill_vals = {}
+        for f in self.categorical_feature_names:
+            keras_name = self.name_mapping[f]
+            self.fill_vals[keras_name] = fm[keras_name].mode().iloc[0]
+        for f in self.numeric_columns:
+            self.fill_vals[f] = fm[f].mean()
         self._compile_keras_model()
 
     def _compile_keras_model(self):
@@ -245,16 +251,19 @@ class DLDB(object):
             if self.categorical_max_vocab is not None:
                 feature_max_vocab = min(feature_max_vocab,
                                         self.categorical_max_vocab)
-            inputs[keras_name] = pd.DataFrame(imputer_transform(
-                                                fm[[keras_name]]),
-                                              columns=[keras_name],
-                                              index=fm.index)
+            vals = fm[[keras_name]]
+            if vals.dropna().shape[0] != vals.shape[0]:
+                vals = vals.fillna(self.fill_vals[keras_name])
+            inputs[keras_name] = vals
         inputs = {k: self.sequences_from_fm(i)[:, :, 0]
                   for k, i in inputs.items()}
 
         if self.numeric_columns:
             numeric_fm = fm[self.numeric_columns]
-            numeric_fm = imputer_transform(numeric_fm)
+            for f in self.numeric_columns:
+                vals = numeric_fm[f]
+                if vals.dropna().shape[0] != vals.shape[0]:
+                    numeric_fm[f] = vals.fillna(self.fill_vals[f])
             numeric_fm = self.scaler.transform(numeric_fm)
             numeric_fm = pd.DataFrame(numeric_fm, index=fm.index,
                                       columns=self.numeric_columns)
@@ -351,7 +360,7 @@ class DLDB(object):
                                                 ascending=False)
             val_counts.set_index(index_name, inplace=True)
             full_mapping = val_counts.index.tolist()
-            unique = val_counts.head(self.categorical_max_vocab - 1).index.tolist()
+            unique = set(val_counts.head(self.categorical_max_vocab - 1).index.tolist())
             unknown = [v for v in full_mapping if v not in unique]
 
             mapping = {v: k + 1 for k, v in enumerate(unique)}
@@ -370,6 +379,7 @@ class DLDB(object):
         unique_vals = input_series.unique()
         new_mapping = {u: 0 for u in unique_vals}
         new_mapping.update(mapping)
+        # TODO: need fast, memory efficient way of replacing categoricals with ints
         numeric = input_series.replace(new_mapping)
         return numeric, new_mapping
 
