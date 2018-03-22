@@ -1,7 +1,7 @@
 from keras.layers import Dense, LSTM, GRU, Embedding, Input, Dropout, BatchNormalization, Conv1D, MaxPooling1D
 from keras.models import Model
 from keras.preprocessing.sequence import pad_sequences
-from sklearn.preprocessing import Imputer, MinMaxScaler, LabelBinarizer
+from sklearn.preprocessing import MinMaxScaler, LabelBinarizer
 from featuretools.variable_types import Discrete, Boolean
 import keras
 import numpy as np
@@ -132,10 +132,10 @@ class DLDB(object):
         self.name_mapping = {c: feature_name_to_valid_keras_name(c)
                              for c in fm.columns}
 
-        self.numeric_columns = [self.name_mapping[f] for f in fm.columns
+        self.numeric_columns = [f for f in fm.columns
                                 if f not in self.categorical_feature_names]
 
-        fm = fm.rename(columns=self.name_mapping)
+        self._fit_scaler_imputer(fm)
 
         instance_id_name = fm.index.names[0]
         self.max_values_per_instance = (
@@ -144,22 +144,33 @@ class DLDB(object):
               .count()
               .max())
 
+        if not self.regression:
+            self.lb = LabelBinarizer().fit(self.classes)
+        self._compile_keras_model()
+
+    def _fit_scaler_imputer(self, fm):
+        self.fill_vals = {}
         if len(self.numeric_columns) > 0:
             numeric_fm = fm[self.numeric_columns]
 
-            numeric_fm = imputer_transform(numeric_fm)
+            numeric_fm = numeric_fm.astype(np.float32)
+            for f in self.numeric_columns:
+                if fm[f].dropna().shape[0] == 0:
+                    fill_val = 0
+                else:
+                    fill_val = numeric_fm[f].dropna().mean()
+                self.fill_vals[f] = fill_val
+                numeric_fm[f] = numeric_fm[f].map({np.inf: np.nan})
+            numeric_fm.fillna(value=self.fill_vals, inplace=True)
             self.scaler = MinMaxScaler()
             self.scaler.fit(numeric_fm)
-        if not self.regression:
-            self.lb = LabelBinarizer().fit(self.classes)
 
-        self.fill_vals = {}
         for f in self.categorical_feature_names:
-            keras_name = self.name_mapping[f]
-            self.fill_vals[keras_name] = fm[keras_name].mode().iloc[0]
-        for f in self.numeric_columns:
-            self.fill_vals[f] = fm[f].mean()
-        self._compile_keras_model()
+            if fm[f].dropna().shape[0] == 0:
+                fill_val = 0
+            else:
+                fill_val = fm[f].dropna().mode().iloc[0]
+            self.fill_vals[f] = fill_val
 
     def _compile_keras_model(self):
         inputs = []
@@ -243,7 +254,6 @@ class DLDB(object):
 
     def input_transform(self, fm, labels=None):
         fm = self.map_categorical_fm_to_int(fm)
-        fm = fm.rename(columns=self.name_mapping)
         inputs = {}
         for i, f in enumerate(self.categorical_feature_names):
             keras_name = self.name_mapping[f]
@@ -251,9 +261,9 @@ class DLDB(object):
             if self.categorical_max_vocab is not None:
                 feature_max_vocab = min(feature_max_vocab,
                                         self.categorical_max_vocab)
-            vals = fm[[keras_name]]
+            vals = fm[[f]]
             if vals.dropna().shape[0] != vals.shape[0]:
-                vals = vals.fillna(self.fill_vals[keras_name])
+                vals = vals.fillna(self.fill_vals[f])
             inputs[keras_name] = vals
         inputs = {k: self.sequences_from_fm(i)[:, :, 0]
                   for k, i in inputs.items()}
@@ -291,6 +301,7 @@ class DLDB(object):
             reset_model=True,
             **kwargs):
         if reset_model:
+            self._fit_scaler_imputer(fm)
             self._compile_keras_model()
 
         if kwargs.get('verbose', 1) > 0:
@@ -379,33 +390,5 @@ class DLDB(object):
         unique_vals = input_series.unique()
         new_mapping = {u: 0 for u in unique_vals}
         new_mapping.update(mapping)
-        # TODO: need fast, memory efficient way of replacing categoricals with ints
-        numeric = input_series.replace(new_mapping)
+        numeric = input_series.map(new_mapping)
         return numeric, new_mapping
-
-
-def imputer_transform(X, y=None):
-    """
-    Wraps sklearn's Imputer to make sure it
-    does not drop any features which end
-    up being all nan in the cross-val split
-    """
-    X = X.astype(np.float32)
-    df = pd.DataFrame(X).copy()
-    all_nans = []
-    other_columns = []
-    for i, c in enumerate(df):
-        if df[c].dropna().shape[0] == 0:
-            all_nans.append(c)
-        else:
-            other_columns.append(c)
-
-    df[all_nans] = 0.0
-    imputer1 = Imputer(missing_values='NaN', strategy="most_frequent", axis=0)
-    imputer2 = Imputer(missing_values=np.inf, strategy="most_frequent", axis=0)
-    imputed = imputer1.fit_transform(X)
-    if imputed.shape[1] == 0:
-        imputed = np.zeros(X.shape)
-    imputed2 = imputer2.fit_transform(imputed)
-    df[other_columns] = imputed2.astype(np.float32)
-    return df.values
