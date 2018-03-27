@@ -23,6 +23,8 @@ setup(
     install_requires=[
         'featuretools>=0.1.18',
         'keras>=2.1.4',
+        'sklearn>=0.19.1',
+        'scikit-learn>=0.19.1',
         'tensorflow>=1.6.0',
     ],
     url='https://github.com/HDI-Project/DL-DB',

@@ -79,9 +79,9 @@ def test_retail_binary(fm_file='retail_binary_files/fm.csv',
                        labels_file='retail_binary_files/labels.csv',
                        fl_file='retail_binary_files/fl.p'):
     fm, labels, fl = construct_retail_example(fm_file, labels_file, fl_file)
-    baseline_fm = (fm.reset_index('CustomerID', drop=False)
-                     .drop_duplicates('CustomerID', keep='last')
-                     .set_index('CustomerID'))
+    baseline_fm = (fm.reset_index('customer_id', drop=False)
+                     .drop_duplicates('customer_id', keep='last')
+                     .set_index('customer_id'))
     baseline_fm, baseline_fl = ft.encode_features(baseline_fm, fl)
     baseline_fm, baseline_fl = remove_low_information_features(baseline_fm, baseline_fl)
     train_customers, test_customers = train_test_split(baseline_fm.index.values, shuffle=True, test_size=0.1)
@@ -96,7 +96,7 @@ def test_retail_binary(fm_file='retail_binary_files/fm.csv',
         regression=False,
         classes=[False, True],
         recurrent_layer_sizes=(32,),
-        dense_layer_sizes=(32,32),
+        dense_layer_sizes=(32, 32),
         categorical_max_vocab=10)
     dl_model.compile(train_fm, fl)
     dl_model.fit(
@@ -170,7 +170,7 @@ def score_baseline_pipeline(X_train, y_train, X_test, y_test, **hyperparams):
 
 
 if __name__ == '__main__':
-    scores = test_ecommerce()
+    #scores = test_ecommerce()
     score, baseline_scores = test_retail_binary()
     print("ROC score:", score)
     print("Baseline ROC scores (using RF, SVM, LogisticRegression):", baseline_scores)

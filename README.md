@@ -12,6 +12,12 @@ pip install -e .
 If that fails due to Tensor Flow, please visit [https://www.tensorflow.org/install/](https://www.tensorflow.org/install/) and follow their instructions for installing Tensor Flow on your system.
 You can also follow their instructions to install the GPU version to allow DLDB to use the GPU.
 
+Be aware that recently users have reported issues installing Tensor Flow on Macs due to a new version of GRPC failing to make. If that happens, try installing grpc==1.9.1 and tensorflow without "-U" or "--upgrade":
+
+```
+pip install gprc==1.9.1 tensorflow
+```
+
 # API
 
 See docstrings in `dldb/tdfs.py` and `dldb/dldb.py`

@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
-
 def create_labels(entityset,
                   min_training_data='28 days',
                   lead='7 days',
@@ -32,11 +31,11 @@ def create_labels(entityset,
             Defaults to the same size as `window`.
     """
 
-    label_cols = ['Quantity', 'UnitPrice']
-    time_index = "InvoiceDate"
-    index = "CustomerID"
-    df = entityset['invoices'].df.merge(
-        entityset['item_purchases'].df, how='outer')
+    label_cols = ['quantity', 'price']
+    time_index = "order_date"
+    index = "customer_id"
+    df = entityset['orders'].df.merge(
+        entityset['order_products'].df, how='outer')
 
     tqdm.pandas(desc="Creating Labels", unit="customer")
 
@@ -86,8 +85,8 @@ def sample_labels(labels, random_seed=1, n=1, gap=None):
         else:
             return df.sample(min(n, df.shape[0]), random_state=random_seed)
 
-    labels = labels.groupby(labels['CustomerID']).apply(sample)
-    return labels.sort_values(['time', 'CustomerID'])
+    labels = labels.groupby(labels['customer_id']).apply(sample)
+    return labels.sort_values(['time', 'customer_id'])
 
 
 def make_labels_from_windows(df, cols,

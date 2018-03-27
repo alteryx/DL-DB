@@ -141,9 +141,9 @@ def score_model(fm, labels, fl, hyperparams):
 
 
 def score_model_baseline(fm, labels, fl, hyperparams):
-    baseline_fm = (fm.reset_index('CustomerID', drop=False)
-                     .drop_duplicates('CustomerID', keep='last')
-                     .set_index('CustomerID'))
+    baseline_fm = (fm.reset_index('customer_id', drop=False)
+                     .drop_duplicates('customer_id', keep='last')
+                     .set_index('customer_id'))
     baseline_fm, baseline_fl = ft.encode_features(baseline_fm, fl)
     baseline_fm, baseline_fl = remove_low_information_features(baseline_fm, baseline_fl)
 

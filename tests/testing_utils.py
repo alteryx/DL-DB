@@ -10,8 +10,8 @@ def construct_retail_example(fm_file='retail_binary_files/fm.csv',
                              fl_file='retail_binary_files/fl.p'):
     es = ft.demo.load_retail()
     if os.path.exists(fm_file):
-        fm = pd.read_csv(fm_file, index_col=['CustomerID', 'time'], parse_dates=['time'])
-        labels = pd.read_csv(labels_file, index_col='CustomerID')['label']
+        fm = pd.read_csv(fm_file, index_col=['customer_id', 'time'], parse_dates=['time'])
+        labels = pd.read_csv(labels_file, index_col='customer_id')['label']
         fl = ft.load_features(fl_file, es)
     else:
         labels = create_labels(es,
@@ -24,7 +24,8 @@ def construct_retail_example(fm_file='retail_binary_files/fm.csv',
         labels_binary = labels.copy()
         labels_binary['label'] = labels_binary['label'] > 300
         sampled = sample_labels(labels_binary, n=1)
-        sampled = sampled[['CustomerID', 'time', 'label']]
+        sampled = sampled[['customer_id', 'time', 'label']]
+        sampled = sampled.sample(300)
 
         fm, fl = tdfs(target_entity='customers',
                       entityset=es,
@@ -33,21 +34,22 @@ def construct_retail_example(fm_file='retail_binary_files/fm.csv',
                       num_windows=5,
                       verbose=True)
 
-        fm = (fm.reset_index('CustomerID', drop=False)
+        fm = (fm.reset_index('customer_id', drop=False)
                 .reset_index(drop=False)
-                .merge(sampled[['CustomerID', 'label']],
-                       on='CustomerID',
+                .merge(sampled[['customer_id', 'label']],
+                       on='customer_id',
                        how='left')
-                .set_index('CustomerID')
+                .set_index('customer_id')
                 .set_index('time', append=True))
 
         labels = (fm['label']
-                  .reset_index('CustomerID', drop=False)
-                  .drop_duplicates('CustomerID')
-                  .set_index('CustomerID'))
+                  .reset_index('customer_id', drop=False)
+                  .drop_duplicates('customer_id')
+                  .set_index('customer_id'))
         del fm['label']
         fm.to_csv(fm_file)
         labels.to_csv(labels_file)
+        labels = labels['label']
         ft.save_features(fl, fl_file)
     return fm, labels, fl
 
