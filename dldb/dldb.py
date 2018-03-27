@@ -121,13 +121,15 @@ class DLDB(object):
             self.categorical_feature_names = categorical_feature_names
         elif fl is not None:
             self.categorical_feature_names = [f.get_name() for f in fl
-                                              if issubclass(f.variable_type, Discrete)
+                                              if issubclass(f.variable_type,
+                                                            Discrete)
                                               and not f.variable_type == Boolean]
         else:
-            self.categorical_feature_names = [c for c in fm.columns if fm[c].dtype == object]
+            self.categorical_feature_names = [c for c in fm.columns
+                                              if fm[c].dtype == object]
 
-        self.categorical_vocab = self.gen_categorical_mapping(fm)
-        fm = self.map_categorical_fm_to_int(fm)
+        self.categorical_vocab = self._gen_categorical_mapping(fm)
+        fm = self._map_categorical_fm_to_int(fm)
 
         self.name_mapping = {c: feature_name_to_valid_keras_name(c)
                              for c in fm.columns}
@@ -147,6 +149,37 @@ class DLDB(object):
         if not self.regression:
             self.lb = LabelBinarizer().fit(self.classes)
         self._compile_keras_model()
+
+    def fit(self, fm, labels,
+            epochs=1, batch_size=32,
+            reset_model=True,
+            **kwargs):
+        if reset_model:
+            self._fit_scaler_imputer(fm)
+            self._compile_keras_model()
+
+        if kwargs.get('verbose', 1) > 0:
+            print("Transforming input matrix into numeric sequences")
+        inputs, outputs = self._input_transform(fm, labels)
+        if kwargs.get('verbose', 1) > 0:
+            print("Fitting Keras model")
+        self.model.fit(
+            inputs,
+            outputs,
+            epochs=epochs,
+            batch_size=batch_size,
+            **kwargs)
+
+    def predict(self, fm, verbose=1):
+        if verbose > 0:
+            print("Transforming input matrix into numeric sequences")
+        inputs = self._input_transform(fm)
+        if verbose > 0:
+            print("Predicting using Keras model")
+        predictions = self.model.predict(inputs)
+        if verbose > 0:
+            print("Transforming outputs")
+        return self._output_transform(predictions)
 
     def _fit_scaler_imputer(self, fm):
         self.fill_vals = {}
@@ -186,7 +219,8 @@ class DLDB(object):
             inputs.append(cat_input)
             embedding = Embedding(output_dim=self.categorical_embedding_size,
                                   input_dim=feature_max_vocab,
-                                  input_length=self.max_values_per_instance)(cat_input)
+                                  input_length=self.max_values_per_instance)
+            embedding = embedding(cat_input)
             cat_embedding_layers.append(embedding)
 
         numeric_input = None
@@ -231,7 +265,8 @@ class DLDB(object):
             return_sequences = True
             _rnn_input_shape = (self.max_values_per_instance, layer_size)
             if i == 0:
-                _rnn_input_shape = (self.max_values_per_instance, rnn_input_size)
+                _rnn_input_shape = (self.max_values_per_instance,
+                                    rnn_input_size)
             if i == len(self.recurrent_layer_sizes) - 1:
                 return_sequences = False
             layer = self.RNNCell(layer_size,
@@ -252,8 +287,8 @@ class DLDB(object):
         self.model = Model(inputs=inputs, outputs=output_layer)
         self.model.compile(optimizer=self.optimizer, loss=self.loss)
 
-    def input_transform(self, fm, labels=None):
-        fm = self.map_categorical_fm_to_int(fm)
+    def _input_transform(self, fm, labels=None):
+        fm = self._map_categorical_fm_to_int(fm)
         inputs = {}
         for i, f in enumerate(self.categorical_feature_names):
             keras_name = self.name_mapping[f]
@@ -265,7 +300,7 @@ class DLDB(object):
             if vals.dropna().shape[0] != vals.shape[0]:
                 vals = vals.fillna(self.fill_vals[f])
             inputs[keras_name] = vals
-        inputs = {k: self.sequences_from_fm(i)[:, :, 0]
+        inputs = {k: self._sequences_from_fm(i)[:, :, 0]
                   for k, i in inputs.items()}
 
         if self.numeric_columns:
@@ -278,7 +313,7 @@ class DLDB(object):
             numeric_fm = pd.DataFrame(numeric_fm, index=fm.index,
                                       columns=self.numeric_columns)
 
-            numeric_inputs = self.sequences_from_fm(numeric_fm)
+            numeric_inputs = self._sequences_from_fm(numeric_fm)
             inputs[self.numeric_input_name] = numeric_inputs
 
         if labels is not None:
@@ -290,44 +325,13 @@ class DLDB(object):
         else:
             return inputs
 
-    def output_transform(self, predictions):
+    def _output_transform(self, predictions):
         if not self.regression and len(self.classes) > 2:
             predictions = np.array([self.lb.classes_[i]
                                     for i in predictions.argmax(axis=1)])
         return predictions
 
-    def fit(self, fm, labels,
-            epochs=1, batch_size=32,
-            reset_model=True,
-            **kwargs):
-        if reset_model:
-            self._fit_scaler_imputer(fm)
-            self._compile_keras_model()
-
-        if kwargs.get('verbose', 1) > 0:
-            print("Transforming input matrix into numeric sequences")
-        inputs, outputs = self.input_transform(fm, labels)
-        if kwargs.get('verbose', 1) > 0:
-            print("Fitting Keras model")
-        self.model.fit(
-            inputs,
-            outputs,
-            epochs=epochs,
-            batch_size=batch_size,
-            **kwargs)
-
-    def predict(self, fm, verbose=1):
-        if verbose > 0:
-            print("Transforming input matrix into numeric sequences")
-        inputs = self.input_transform(fm)
-        if verbose > 0:
-            print("Predicting using Keras model")
-        predictions = self.model.predict(inputs)
-        if verbose > 0:
-            print("Transforming outputs")
-        return self.output_transform(predictions)
-
-    def sequences_from_fm(self, fm):
+    def _sequences_from_fm(self, fm):
         instance_id_name = fm.index.names[0]
         fm.reset_index(instance_id_name, drop=False, inplace=True)
         fm.reset_index(drop=True, inplace=True)
@@ -339,17 +343,17 @@ class DLDB(object):
                                        padding='pre')
         return sequence_input
 
-    def map_categorical_fm_to_int(self, fm):
+    def _map_categorical_fm_to_int(self, fm):
         new_fm = fm.copy()
         for f in self.categorical_feature_names:
-            numeric_series, new_mapping = self.map_categorical_series_to_int(
+            numeric_series, new_mapping = self._map_categorical_series_to_int(
                 fm[f],
                 self.categorical_vocab.get(f, None))
             new_fm[f] = numeric_series
             self.categorical_vocab[f] = new_mapping
         return new_fm
 
-    def gen_categorical_mapping(self, fm):
+    def _gen_categorical_mapping(self, fm):
         categorical_vocab = {}
         if self.categorical_max_vocab is None:
             self.categorical_max_vocab = max(fm[f].dropna().nunique()
@@ -380,8 +384,8 @@ class DLDB(object):
             categorical_vocab[f] = mapping
         return categorical_vocab
 
-    def map_categorical_series_to_int(self, input_series,
-                                      mapping):
+    def _map_categorical_series_to_int(self, input_series,
+                                       mapping):
         nan_val = [k for k, v in mapping.items()
                    if v == -1][0]
 

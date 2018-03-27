@@ -2,6 +2,16 @@
 
 Deep learning for time-varying multi-entity datasets
 
+# Installation
+
+You should be able to just run:
+```
+pip install -e .
+```
+
+If that fails due to Tensor Flow, please visit [https://www.tensorflow.org/install/](https://www.tensorflow.org/install/) and follow their instructions for installing Tensor Flow on your system.
+You can also follow their instructions to install the GPU version to allow DLDB to use the GPU.
+
 # API
 
 See docstrings in `dldb/tdfs.py` and `dldb/dldb.py`

@@ -70,11 +70,15 @@ def tdfs(entities=None,
             instance_id_column = cutoffs.columns[0]
         time_column = 'time'
         if time_column not in cutoffs:
-            not_instance_id = [c for c in cutoffs.columns if c != instance_id_column]
+            not_instance_id = [c for c in cutoffs.columns
+                               if c != instance_id_column]
             time_column = not_instance_id[0]
         times = cutoffs[time_column]
-        temporal_cutoffs = make_temporal_cutoffs(instance_ids, times, window_size,
-                                                 num_windows, start)
+        temporal_cutoffs = make_temporal_cutoffs(instance_ids,
+                                                 times,
+                                                 window_size,
+                                                 num_windows,
+                                                 start)
     result = ft.dfs(entityset=entityset,
                     features_only=features_only,
                     cutoff_time=temporal_cutoffs,
