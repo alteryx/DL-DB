@@ -1,13 +1,10 @@
 from keras.layers import Dense, LSTM, GRU, Embedding, Input, Dropout, BatchNormalization, Conv1D, MaxPooling1D
 from keras.models import Model
 from keras.preprocessing.sequence import pad_sequences
-from sklearn.preprocessing import MinMaxScaler, LabelBinarizer
-from featuretools.variable_types import Discrete, Boolean
+from .preprocessor import MLPreprocessor
 import keras
 import numpy as np
-import pandas as pd
 import re
-import uuid
 
 RNN_CELLS = {
     'lstm': LSTM,
@@ -95,17 +92,31 @@ class DLDB(object):
         self.conv_batch_normalization = conv_batch_normalization
         self.metrics = metrics
         self.optimizer = optimizer
-        self.categorical_feature_names = None
-        self.categorical_vocab = None
         self.max_values_per_instance = None
         self.name_mapping = None
+        self.ml_preprocessor = MLPreprocessor(
+            categorical_max_vocab=self.categorical_max_vocab,
+            classes=self.classes,
+            regression=self.regression)
 
-    def compile(self, fm, fl=None, categorical_feature_names=None):
+    @property
+    def categorical_vocab(self):
+        return self.ml_preprocessor.categorical_vocab
+
+    @property
+    def numeric_columns(self):
+        return self.ml_preprocessor.numeric_columns
+
+    @property
+    def categorical_feature_names(self):
+        return self.ml_preprocessor.categorical_feature_names
+
+    def compile(self, ftens, fl=None, categorical_feature_names=None):
         '''
-        fm (pd.DataFrame): Time-varying feature matrix with multiple time points per instance. Can contain both categorical
-            as well as numeric features. Index should either be just the instance_id, or a MultiIndex with the instance_id and time,
+        ftens (pd.DataFrame): 3D (flattened to 2D DataFrame) feature tensor with multiple time points or observations per instance. Can contain both categorical
+            as well as numeric features. Index should either be just the instance_id, or a MultiIndex with the instance_id and time/step,
             with the instance_id as the first level.
-        fl (list[ft.PrimitiveBase], optional): List of feature objects representing each column in fm. Will be used if
+        fl (list[ft.PrimitiveBase], optional): List of feature objects representing each column in ftens. Will be used if
             categorical_feature_names not provided.
         categorical_feature_names (list[str], optional): List of feature names that are categorical
 
@@ -113,54 +124,36 @@ class DLDB(object):
         are categorical
 
         Assumes all provided features can be treated as either categorical or numeric (including Booleans).
-        If a data type exists in fm other than a numeric or object type (such as a datetime), then make sure to
+        If a data type exists in ftens other than a numeric or object type (such as a datetime), then make sure to
         include that feature in categorical_feature_names to treat it as a categorical.
         '''
 
-        if categorical_feature_names is not None:
-            self.categorical_feature_names = categorical_feature_names
-        elif fl is not None:
-            self.categorical_feature_names = [f.get_name() for f in fl
-                                              if issubclass(f.variable_type,
-                                                            Discrete)
-                                              and not f.variable_type == Boolean]
-        else:
-            self.categorical_feature_names = [c for c in fm.columns
-                                              if fm[c].dtype == object]
-
-        self.categorical_vocab = self._gen_categorical_mapping(fm)
-        fm = self._map_categorical_fm_to_int(fm)
-
+        ftens = self.ml_preprocessor.fit_transform(
+            ftens, fl=fl,
+            categorical_feature_names=categorical_feature_names)
         self.name_mapping = {c: feature_name_to_valid_keras_name(c)
-                             for c in fm.columns}
+                             for c in ftens.columns}
 
-        self.numeric_columns = [f for f in fm.columns
-                                if f not in self.categorical_feature_names]
-
-        self._fit_scaler_imputer(fm)
-
-        instance_id_name = fm.index.names[0]
+        instance_id_name = ftens.index.names[0]
         self.max_values_per_instance = (
-            fm.reset_index(instance_id_name, drop=False)
+            ftens.reset_index(instance_id_name, drop=False)
               .groupby(instance_id_name)[instance_id_name]
               .count()
               .max())
 
-        if not self.regression:
-            self.lb = LabelBinarizer().fit(self.classes)
         self._compile_keras_model()
 
-    def fit(self, fm, labels,
+    def fit(self, ftens, labels,
             epochs=1, batch_size=32,
             reset_model=True,
             **kwargs):
         if reset_model:
-            self._fit_scaler_imputer(fm)
+            self.ml_preprocessor.fit_scaler_imputer(ftens)
             self._compile_keras_model()
 
         if kwargs.get('verbose', 1) > 0:
-            print("Transforming input matrix into numeric sequences")
-        inputs, outputs = self._input_transform(fm, labels)
+            print("Transforming input tensor into numeric sequences")
+        inputs, outputs = self._input_transform(ftens, labels)
         if kwargs.get('verbose', 1) > 0:
             print("Fitting Keras model")
         self.model.fit(
@@ -170,40 +163,16 @@ class DLDB(object):
             batch_size=batch_size,
             **kwargs)
 
-    def predict(self, fm, verbose=1):
+    def predict(self, ftens, verbose=1):
         if verbose > 0:
-            print("Transforming input matrix into numeric sequences")
-        inputs = self._input_transform(fm)
+            print("Transforming input tensor into numeric sequences")
+        inputs = self._input_transform(ftens)
         if verbose > 0:
             print("Predicting using Keras model")
         predictions = self.model.predict(inputs)
         if verbose > 0:
             print("Transforming outputs")
         return self._output_transform(predictions)
-
-    def _fit_scaler_imputer(self, fm):
-        self.fill_vals = {}
-        if len(self.numeric_columns) > 0:
-            numeric_fm = fm[self.numeric_columns]
-
-            numeric_fm = numeric_fm.astype(np.float32)
-            for f in self.numeric_columns:
-                if fm[f].dropna().shape[0] == 0:
-                    fill_val = 0
-                else:
-                    fill_val = numeric_fm[f].dropna().mean()
-                self.fill_vals[f] = fill_val
-                numeric_fm[f] = numeric_fm[f].map({np.inf: np.nan})
-            numeric_fm.fillna(value=self.fill_vals, inplace=True)
-            self.scaler = MinMaxScaler()
-            self.scaler.fit(numeric_fm)
-
-        for f in self.categorical_feature_names:
-            if fm[f].dropna().shape[0] == 0:
-                fill_val = 0
-            else:
-                fill_val = fm[f].dropna().mode().iloc[0]
-            self.fill_vals[f] = fill_val
 
     def _compile_keras_model(self):
         inputs = []
@@ -287,40 +256,19 @@ class DLDB(object):
         self.model = Model(inputs=inputs, outputs=output_layer)
         self.model.compile(optimizer=self.optimizer, loss=self.loss)
 
-    def _input_transform(self, fm, labels=None):
-        fm = self._map_categorical_fm_to_int(fm)
-        inputs = {}
-        for i, f in enumerate(self.categorical_feature_names):
-            keras_name = self.name_mapping[f]
-            feature_max_vocab = len(self.categorical_vocab[f])
-            if self.categorical_max_vocab is not None:
-                feature_max_vocab = min(feature_max_vocab,
-                                        self.categorical_max_vocab)
-            vals = fm[[f]]
-            if vals.dropna().shape[0] != vals.shape[0]:
-                vals = vals.fillna(self.fill_vals[f])
-            inputs[keras_name] = vals
-        inputs = {k: self._sequences_from_fm(i)[:, :, 0]
-                  for k, i in inputs.items()}
+    def _input_transform(self, ftens, labels=None):
+        if labels is not None:
+            ftens, labels = self.ml_preprocessor.transform(ftens, labels=None)
+        else:
+            ftens = self.ml_preprocessor.transform(ftens)
+
+        inputs = {self.name_mapping[f]: self._sequences_from_ftens(ftens[f])[:, :, 0]
+                  for f in self.categorical_feature_names}
 
         if self.numeric_columns:
-            numeric_fm = fm[self.numeric_columns]
-            for f in self.numeric_columns:
-                vals = numeric_fm[f]
-                if vals.dropna().shape[0] != vals.shape[0]:
-                    numeric_fm[f] = vals.fillna(self.fill_vals[f])
-            numeric_fm = self.scaler.transform(numeric_fm)
-            numeric_fm = pd.DataFrame(numeric_fm, index=fm.index,
-                                      columns=self.numeric_columns)
-
-            numeric_inputs = self._sequences_from_fm(numeric_fm)
-            inputs[self.numeric_input_name] = numeric_inputs
+            inputs[self.numeric_input_name] = self._sequences_from_ftens(ftens[self.numeric_columns])
 
         if labels is not None:
-            if not self.regression:
-                labels = pd.Series(labels).astype(int)
-                if len(self.classes) > 2:
-                    labels = self.lb.transform(labels)
             return inputs, labels
         else:
             return inputs
@@ -331,68 +279,14 @@ class DLDB(object):
                                     for i in predictions.argmax(axis=1)])
         return predictions
 
-    def _sequences_from_fm(self, fm):
-        instance_id_name = fm.index.names[0]
-        fm.reset_index(instance_id_name, drop=False, inplace=True)
-        fm.reset_index(drop=True, inplace=True)
+    def _sequences_from_ftens(self, ftens):
+        instance_id_name = ftens.index.names[0]
+        ftens.reset_index(instance_id_name, drop=False, inplace=True)
+        ftens.reset_index(drop=True, inplace=True)
 
         sequences = [group.drop([instance_id_name], axis=1)
-                     for _, group in fm.groupby(instance_id_name)]
+                     for _, group in ftens.groupby(instance_id_name)]
         sequence_input = pad_sequences(sequences,
                                        maxlen=self.max_values_per_instance,
                                        padding='pre')
         return sequence_input
-
-    def _map_categorical_fm_to_int(self, fm):
-        new_fm = fm.copy()
-        for f in self.categorical_feature_names:
-            numeric_series, new_mapping = self._map_categorical_series_to_int(
-                fm[f],
-                self.categorical_vocab.get(f, None))
-            new_fm[f] = numeric_series
-            self.categorical_vocab[f] = new_mapping
-        return new_fm
-
-    def _gen_categorical_mapping(self, fm):
-        categorical_vocab = {}
-        if self.categorical_max_vocab is None:
-            self.categorical_max_vocab = max(fm[f].dropna().nunique()
-                                             for f in fm)
-        for f in self.categorical_feature_names:
-            nan_val = str(uuid.uuid4())
-            val_counts = (fm[f].astype(str)
-                               .fillna(nan_val)
-                               .value_counts()
-                               .to_frame())
-            index_name = val_counts.index.name
-            if index_name is None:
-                if 'index' in val_counts.columns:
-                    index_name = 'level_0'
-                else:
-                    index_name = 'index'
-            val_counts.reset_index(inplace=True)
-            val_counts = val_counts.sort_values([f, index_name],
-                                                ascending=False)
-            val_counts.set_index(index_name, inplace=True)
-            full_mapping = val_counts.index.tolist()
-            unique = set(val_counts.head(self.categorical_max_vocab - 1).index.tolist())
-            unknown = [v for v in full_mapping if v not in unique]
-
-            mapping = {v: k + 1 for k, v in enumerate(unique)}
-            mapping.update({v: 0 for v in unknown})
-            mapping[nan_val] = -1
-            categorical_vocab[f] = mapping
-        return categorical_vocab
-
-    def _map_categorical_series_to_int(self, input_series,
-                                       mapping):
-        nan_val = [k for k, v in mapping.items()
-                   if v == -1][0]
-
-        input_series = input_series.astype(str).fillna(nan_val)
-
-        unique_vals = input_series.unique()
-        new_mapping = {u: 0 for u in unique_vals}
-        new_mapping.update(mapping)
-        numeric = input_series.map(new_mapping)
-        return numeric, new_mapping
