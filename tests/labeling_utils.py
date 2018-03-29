@@ -9,28 +9,6 @@ def create_labels(entityset,
                   reduce='sum',
                   binarize=None,
                   iterate_by=None):
-    """
-    Inputs
-      * entityset (ft.EntitySet): featuretools EntitySet for SLA violation
-            predictor
-      * min_training_data (str): number with appropriate units representing the
-            minimum abount of training data each project must have to have
-            a label computed for it
-      * lead (str): number with appropriate units representing the
-            amount of time in the future to predict
-      * window (str): number with appropriate units representing the
-            amount of time in which to check for violations
-      * reduce (str): how to reduce the multiple values for SLAs met/total SLAs
-            across different weeks. Sum will sum up the SLAs met and total SLAs
-            and then divide
-      * binarize (function): Function that takes in a numeric label and returns
-            a True/False value
-      * iterate_by (str): number with appropriate units representing the
-            amount of time to iterate the label generation algorithm. In
-            other words, this is the amount of time between successive labels.
-            Defaults to the same size as `window`.
-    """
-
     label_cols = ['quantity', 'price']
     time_index = "order_date"
     index = "customer_id"
