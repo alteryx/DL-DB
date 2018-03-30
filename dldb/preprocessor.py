@@ -15,6 +15,10 @@ class MLPreprocessor(object):
         self.regression = regression
         self.categorical_vocab = None
 
+    def fit_transform(self, ftens, fl=None, categorical_feature_names=None, labels=None):
+        self.fit(ftens, fl=fl, categorical_feature_names=categorical_feature_names)
+        return self.transform(ftens, labels=labels)
+
     def fit(self, ftens, fl=None, categorical_feature_names=None):
         if categorical_feature_names is not None:
             self.categorical_feature_names = categorical_feature_names

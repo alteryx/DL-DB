@@ -258,11 +258,11 @@ class DLDB(object):
 
     def _input_transform(self, ftens, labels=None):
         if labels is not None:
-            ftens, labels = self.ml_preprocessor.transform(ftens, labels=None)
+            ftens, labels = self.ml_preprocessor.transform(ftens, labels=labels)
         else:
             ftens = self.ml_preprocessor.transform(ftens)
 
-        inputs = {self.name_mapping[f]: self._sequences_from_ftens(ftens[f])[:, :, 0]
+        inputs = {self.name_mapping[f]: self._sequences_from_ftens(ftens[[f]])[:, :, 0]
                   for f in self.categorical_feature_names}
 
         if self.numeric_columns:
