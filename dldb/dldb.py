@@ -193,7 +193,7 @@ class DLDB(object):
                 else:
                     fill_val = numeric_fm[f].dropna().mean()
                 self.fill_vals[f] = fill_val
-                numeric_fm[f] = numeric_fm[f].map({np.inf: np.nan})
+                numeric_fm.loc[~np.isfinite(numeric_fm[f]), f] = np.nan
             numeric_fm.fillna(value=self.fill_vals, inplace=True)
             self.scaler = MinMaxScaler()
             self.scaler.fit(numeric_fm)
