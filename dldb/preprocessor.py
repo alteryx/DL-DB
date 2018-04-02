@@ -55,7 +55,7 @@ class MLPreprocessor(object):
                 else:
                     fill_val = numeric_ftens[f].dropna().mean()
                 self.fill_vals[f] = fill_val
-                numeric_ftens[f] = numeric_ftens[f].map({np.inf: np.nan})
+                numeric_ftens.loc[~np.isfinite(numeric_ftens[f]), f] = np.nan
             numeric_ftens.fillna(value=self.fill_vals, inplace=True)
             self.scaler = MinMaxScaler()
             self.scaler.fit(numeric_ftens)
