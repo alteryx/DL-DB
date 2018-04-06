@@ -2,6 +2,7 @@ from keras.layers import Dense, LSTM, GRU, Embedding, Input, Dropout, BatchNorma
 from keras.models import Model
 from keras.preprocessing.sequence import pad_sequences
 from .preprocessor import MLPreprocessor
+from itertools import groupby
 import keras
 import numpy as np
 import re
@@ -257,6 +258,7 @@ class DLDB(object):
         self.model.compile(optimizer=self.optimizer, loss=self.loss)
 
     def _input_transform(self, ftens, labels=None):
+        # Assume index in (instance_id, time) and index already sorted
         if labels is not None:
             ftens, labels = self.ml_preprocessor.transform(ftens, labels=labels)
         else:
@@ -284,8 +286,10 @@ class DLDB(object):
         ftens.reset_index(instance_id_name, drop=False, inplace=True)
         ftens.reset_index(drop=True, inplace=True)
 
-        sequences = [group.drop([instance_id_name], axis=1)
-                     for _, group in ftens.groupby(instance_id_name)]
+        instance_col = list(ftens.columns).index(instance_id_name)
+        sequences = [list(group)
+                     for _, group in groupby(ftens.values,
+                                             lambda row: row[instance_col])]
         sequence_input = pad_sequences(sequences,
                                        maxlen=self.max_values_per_instance,
                                        padding='pre')
