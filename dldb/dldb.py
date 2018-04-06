@@ -282,14 +282,12 @@ class DLDB(object):
         return predictions
 
     def _sequences_from_ftens(self, ftens):
-        instance_id_name = ftens.index.names[0]
-        ftens.reset_index(instance_id_name, drop=False, inplace=True)
-        ftens.reset_index(drop=True, inplace=True)
-
-        instance_col = list(ftens.columns).index(instance_id_name)
-        sequences = [list(group)
-                     for _, group in groupby(ftens.values,
-                                             lambda row: row[instance_col])]
+        cols = list(ftens.columns)
+        ftens.reset_index(inplace=True, drop=False)
+        fm = ftens[cols + [self.instance_id_name]]
+        sequences = [list(group)[:-1]
+                     for _, group in groupby(fm.values,
+                                             lambda row: row[-1])]
         sequence_input = pad_sequences(sequences,
                                        maxlen=self.max_values_per_instance,
                                        padding='pre')
