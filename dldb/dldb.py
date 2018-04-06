@@ -3,6 +3,7 @@ from keras.models import Model
 from keras.preprocessing.sequence import pad_sequences
 from sklearn.preprocessing import MinMaxScaler, LabelBinarizer
 from featuretools.variable_types import Discrete, Boolean
+from itertools import groupby
 import keras
 import numpy as np
 import pandas as pd
@@ -288,6 +289,7 @@ class DLDB(object):
         self.model.compile(optimizer=self.optimizer, loss=self.loss)
 
     def _input_transform(self, fm, labels=None):
+        # Assume index in (instance_id, time) and index already sorted
         fm = self._map_categorical_fm_to_int(fm)
         inputs = {}
         for i, f in enumerate(self.categorical_feature_names):
@@ -336,8 +338,10 @@ class DLDB(object):
         fm.reset_index(instance_id_name, drop=False, inplace=True)
         fm.reset_index(drop=True, inplace=True)
 
-        sequences = [group.drop([instance_id_name], axis=1)
-                     for _, group in fm.groupby(instance_id_name)]
+        instance_col = list(fm.columns).index(instance_id_name)
+        sequences = [list(group)
+                     for _, group in groupby(fm.values,
+                                             lambda row: row[instance_col])]
         sequence_input = pad_sequences(sequences,
                                        maxlen=self.max_values_per_instance,
                                        padding='pre')
