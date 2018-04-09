@@ -106,6 +106,10 @@ class MLPreprocessor(object):
         return new_ftens
 
     def _gen_categorical_mapping(self, ftens):
+        # TODO:
+        # df['col2'] = df['col2'].astype('category')
+        # df[cat_columns] = df[cat_columns].apply(lambda x: x.cat.codes)
+
         categorical_vocab = {}
         if self.categorical_max_vocab is None:
             self.categorical_max_vocab = max(ftens[f].dropna().nunique()
