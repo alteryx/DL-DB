@@ -63,9 +63,9 @@ def test_ecommerce():
             regression=label_type == 'label_regression',
             classes=classes,
             categorical_max_vocab=10)
-        dl_model.compile(train_ftens, fl)
         dl_model.fit(train_ftens,
                      train_labels[label_type].values,
+                     fl=fl,
                      epochs=1,
                      batch_size=4)
         predictions = dl_model.predict(test_ftens)
@@ -98,11 +98,10 @@ def test_retail_binary(ftens_file='retail_binary_files/ftens.csv',
         recurrent_layer_sizes=(32,),
         dense_layer_sizes=(32, 32),
         categorical_max_vocab=10)
-    dl_model.compile(train_ftens, fl)
     dl_model.fit(
             train_ftens,
             train_labels,
-            validation_split=0.1,
+            fl=fl,
             epochs=1,
             batch_size=32)
     predictions = dl_model.predict(test_ftens)
