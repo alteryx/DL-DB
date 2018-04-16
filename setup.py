@@ -20,6 +20,7 @@ setup(
     version=read_package_variable('__version__'),
     description='Deep learning for relational datasets with a time-component',
     packages=find_packages(),
+    python_requires='>=3',
     install_requires=[
         'featuretools>=0.1.20',
         'keras>=2.1.4',

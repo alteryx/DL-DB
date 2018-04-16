@@ -2,7 +2,6 @@ from featuretools.variable_types import Discrete, Boolean
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler, LabelBinarizer
 import pandas as pd
-import uuid
 
 
 class MLPreprocessor(object):
