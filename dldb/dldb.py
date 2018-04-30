@@ -1,14 +1,15 @@
 from keras.layers import Dense, LSTM, GRU, Embedding, Input, Dropout, BatchNormalization, Conv1D, MaxPooling1D
 from keras.models import Model
 from keras.preprocessing.sequence import pad_sequences
-from sklearn.preprocessing import MinMaxScaler, LabelBinarizer
-from featuretools.variable_types import Discrete, Boolean
+from keras.utils import Sequence
+from .preprocessor import MLPreprocessor
 from itertools import groupby
 import keras
 import numpy as np
-import pandas as pd
 import re
 import uuid
+from math import ceil
+
 
 RNN_CELLS = {
     'lstm': LSTM,
@@ -18,6 +19,86 @@ RNN_CELLS = {
 
 def feature_name_to_valid_keras_name(fname):
     return re.sub(r'[(.]', '_', fname).replace(')', '')
+
+
+class DLDBInputGenerator(Sequence):
+    def __init__(self, ftens,
+                 categorical_feature_names,
+                 numeric_input_name,
+                 name_mapping,
+                 numeric_columns,
+                 batch_size=32,
+                 labels=None):
+        self.ftens = ftens
+        self.labels = labels
+        self.instance_id_name = self.ftens.index.names[0]
+        self.ftens.reset_index(self.instance_id_name, drop=False, inplace=True)
+        self.batch_size = batch_size
+        if self.batch_size:
+            self.batch_col = uuid.uuid4()
+
+            self.ftens[self.batch_col] = self.ftens[self.instance_id_name].astype(
+                'category').cat.codes // self.batch_size
+            self.ftens.set_index(self.batch_col, inplace=True)
+
+        # TODO: figure out what to do about these
+        self.name_mapping = name_mapping
+        self.categorical_feature_names = categorical_feature_names
+        self.numeric_input_name = numeric_input_name
+        self.numeric_columns = numeric_columns
+
+        self._length = 1
+        if self.labels is not None:
+            self.labels = self.labels.to_frame().reset_index(
+                self.instance_id_name,
+                drop=False)
+            if self.batch_size:
+                self.labels[self.batch_col] = self.labels[self.instance_id_name].astype(
+                    'category').cat.codes // self.batch_size
+                self.labels.set_index(self.batch_col, inplace=True)
+
+                self._length = int(ceil(self.labels.shape[0] / self.batch_size))
+            else:
+                self._length = int(ceil(self.labels.shape[0] / self.batch_size))
+        elif self.batch_size:
+            self._length = int(ceil(self.ftens[self.instance_id_name].nunique() / self.batch_size))
+
+    def __len__(self):
+        return self._length
+
+    def __getitem__(self, idx):
+        labels = None
+        if self.batch_size:
+            ftens = self.ftens.loc[idx].set_index(self.instance_id_name)
+            if self.labels is not None:
+                labels = self.labels.loc[idx].set_index(self.instance_id_name)
+        else:
+            ftens = self.ftens.set_index(self.instance_id_name)
+            if self.labels is not None:
+                labels = self.labels.set_index(self.instance_id_name)
+
+        inputs = {self.name_mapping[f]: self._sequences_from_ftens(
+                ftens[[f]])[:, :, 0]
+              for f in self.categorical_feature_names}
+        if self.numeric_columns:
+            inputs[self.numeric_input_name] = self._sequences_from_ftens(
+                ftens[self.numeric_columns])
+        if labels is None:
+            return inputs
+        else:
+            return inputs, labels
+
+    def _sequences_from_ftens(self, ftens):
+        cols = list(ftens.columns)
+        instance_id_name = ftens.index.names[0]
+        ftens.reset_index(inplace=True, drop=False)
+        ftens = ftens[cols + [instance_id_name]]
+        # TODO: revert back to pandas here? since its batched
+        sequences = [np.array(list(group))[:, :-1]
+                     for _, group in groupby(ftens.values, lambda row: row[-1])]
+        sequence_input = pad_sequences(sequences,
+                                       padding='pre')
+        return sequence_input
 
 
 class DLDB(object):
@@ -96,137 +177,114 @@ class DLDB(object):
         self.conv_batch_normalization = conv_batch_normalization
         self.metrics = metrics
         self.optimizer = optimizer
-        self.categorical_feature_names = None
-        self.categorical_vocab = None
         self.max_values_per_instance = None
         self.name_mapping = None
+        self.ml_preprocessor = MLPreprocessor(
+            categorical_max_vocab=self.categorical_max_vocab,
+            classes=self.classes,
+            regression=self.regression)
 
-    def compile(self, fm, fl=None, categorical_feature_names=None):
-        '''
-        fm (pd.DataFrame): Time-varying feature matrix with multiple time points per instance. Can contain both categorical
-            as well as numeric features. Index should either be just the instance_id, or a MultiIndex with the instance_id and time,
-            with the instance_id as the first level.
-        fl (list[ft.PrimitiveBase], optional): List of feature objects representing each column in fm. Will be used if
-            categorical_feature_names not provided.
-        categorical_feature_names (list[str], optional): List of feature names that are categorical
+    @property
+    def categorical_vocab(self):
+        return self.ml_preprocessor.categorical_vocab
 
-        Note: If neither categorical_feature_names nor fl provided, will assume all features of dtype object
-        are categorical
+    @property
+    def numeric_columns(self):
+        return self.ml_preprocessor.numeric_columns
 
-        Assumes all provided features can be treated as either categorical or numeric (including Booleans).
-        If a data type exists in fm other than a numeric or object type (such as a datetime), then make sure to
-        include that feature in categorical_feature_names to treat it as a categorical.
-        '''
+    @property
+    def categorical_feature_names(self):
+        return self.ml_preprocessor.categorical_feature_names
 
-        if categorical_feature_names is not None:
-            self.categorical_feature_names = categorical_feature_names
-        elif fl is not None:
-            self.categorical_feature_names = [f.get_name() for f in fl
-                                              if issubclass(f.variable_type,
-                                                            Discrete)
-                                              and not f.variable_type == Boolean]
+    def _preprocess(self, ftens, labels=None,
+                    fl=None, categorical_feature_names=None,
+                    batch_size=32,
+                    fit=True):
+        if fit:
+            ftens = self.ml_preprocessor.fit_transform(
+                ftens, fl=fl,
+                categorical_feature_names=categorical_feature_names)
+            self.name_mapping = {c: feature_name_to_valid_keras_name(c)
+                                 for c in ftens.columns}
         else:
-            self.categorical_feature_names = [c for c in fm.columns
-                                              if fm[c].dtype == object]
+            ftens = self.ml_preprocessor.transform(ftens)
+        return DLDBInputGenerator(ftens,
+                                  self.categorical_feature_names,
+                                  self.numeric_input_name,
+                                  self.name_mapping,
+                                  self.numeric_columns,
+                                  batch_size=batch_size,
+                                  labels=labels)
 
-        self.categorical_vocab = self._gen_categorical_mapping(fm)
-        fm = self._map_categorical_fm_to_int(fm)
+    def partial_fit(self,
+                    ftens=None,
+                    labels=None,
+                    generator=None,
+                    batch_size=32,
+                    **kwargs):
+        if generator is None:
+            generator = self._preprocess(ftens,
+                                         labels,
+                                         batch_size=batch_size,
+                                         fit=False)
 
-        self.name_mapping = {c: feature_name_to_valid_keras_name(c)
-                             for c in fm.columns}
+        return (self.model.fit_generator(generator,
+                                         **kwargs),
+                generator)
 
-        self.numeric_columns = [f for f in fm.columns
-                                if f not in self.categorical_feature_names]
-
-        self._fit_scaler_imputer(fm)
-
-        instance_id_name = fm.index.names[0]
-        self.max_values_per_instance = (
-            fm.reset_index(instance_id_name, drop=False)
-              .groupby(instance_id_name)[instance_id_name]
-              .count()
-              .max())
-
-        if not self.regression:
-            self.lb = LabelBinarizer().fit(self.classes)
-        self._compile_keras_model()
-
-    def fit(self, fm, labels,
-            epochs=1, batch_size=32,
-            reset_model=True,
+    def fit(self,
+            ftens,
+            labels,
+            fl=None, categorical_feature_names=None,
+            batch_size=32,
             **kwargs):
-        if reset_model:
-            self._fit_scaler_imputer(fm)
-            self._compile_keras_model()
-
-        if kwargs.get('verbose', 1) > 0:
-            print("Transforming input matrix into numeric sequences")
-        inputs, outputs = self._input_transform(fm, labels)
-        if kwargs.get('verbose', 1) > 0:
-            print("Fitting Keras model")
-        self.model.fit(
-            inputs,
-            outputs,
-            epochs=epochs,
+        generator = self._preprocess(
+            ftens,
+            labels,
+            fl=fl,
+            categorical_feature_names=categorical_feature_names,
             batch_size=batch_size,
-            **kwargs)
+            fit=True)
+        self._compile_keras_model()
+        return (self.model.fit_generator(generator,
+                                         **kwargs),
+                generator)
 
-    def predict(self, fm, verbose=1):
+    def predict(self, ftens, verbose=1, **kwargs):
         if verbose > 0:
-            print("Transforming input matrix into numeric sequences")
-        inputs = self._input_transform(fm)
+            print("Transforming input tensor into numeric sequences")
+        generator = self._preprocess(ftens, batch_size=None, fit=False)
         if verbose > 0:
             print("Predicting using Keras model")
-        predictions = self.model.predict(inputs)
+        predictions = self.model.predict_generator(generator, **kwargs)
         if verbose > 0:
             print("Transforming outputs")
-        return self._output_transform(predictions)
-
-    def _fit_scaler_imputer(self, fm):
-        self.fill_vals = {}
-        if len(self.numeric_columns) > 0:
-            numeric_fm = fm[self.numeric_columns]
-
-            numeric_fm = numeric_fm.astype(np.float32)
-            for f in self.numeric_columns:
-                if fm[f].dropna().shape[0] == 0:
-                    fill_val = 0
-                else:
-                    fill_val = numeric_fm[f].dropna().mean()
-                self.fill_vals[f] = fill_val
-                numeric_fm.loc[~np.isfinite(numeric_fm[f]), f] = np.nan
-            numeric_fm.fillna(value=self.fill_vals, inplace=True)
-            self.scaler = MinMaxScaler()
-            self.scaler.fit(numeric_fm)
-
-        for f in self.categorical_feature_names:
-            if fm[f].dropna().shape[0] == 0:
-                fill_val = 0
-            else:
-                fill_val = fm[f].dropna().mode().iloc[0]
-            self.fill_vals[f] = fill_val
+        if not self.regression and len(self.classes) > 2:
+            predictions = np.array([self.lb.classes_[i]
+                                    for i in predictions.argmax(axis=1)])
+        return predictions
 
     def _compile_keras_model(self):
         inputs = []
         cat_embedding_layers = []
         for i, f in enumerate(self.categorical_feature_names):
-            feature_max_vocab = len(self.categorical_vocab[f])
+            feature_max_vocab = len(self.categorical_vocab[f]) + 1
             if self.categorical_max_vocab is not None:
                 feature_max_vocab = min(feature_max_vocab,
-                                        self.categorical_max_vocab)
-            cat_input = Input(shape=(self.max_values_per_instance,),
+                                        self.categorical_max_vocab + 1)
+            cat_input = Input(shape=(None,),
                               dtype='int32',
                               name=self.name_mapping[f])
             inputs.append(cat_input)
             embedding = Embedding(output_dim=self.categorical_embedding_size,
                                   input_dim=feature_max_vocab,
-                                  input_length=self.max_values_per_instance)
+                                  mask_zero=True)
             embedding = embedding(cat_input)
             cat_embedding_layers.append(embedding)
 
         numeric_input = None
         if len(self.numeric_columns) > 0:
-            numeric_input = Input(shape=(self.max_values_per_instance,
+            numeric_input = Input(shape=(None,
                                          len(self.numeric_columns)),
                                   dtype='float32',
                                   name=self.numeric_input_name)
@@ -264,17 +322,13 @@ class DLDB(object):
         prev_layer = rnn_inputs
         for i, layer_size in enumerate(self.recurrent_layer_sizes):
             return_sequences = True
-            _rnn_input_shape = (self.max_values_per_instance, layer_size)
-            if i == 0:
-                _rnn_input_shape = (self.max_values_per_instance,
-                                    rnn_input_size)
             if i == len(self.recurrent_layer_sizes) - 1:
                 return_sequences = False
-            layer = self.RNNCell(layer_size,
-                                 return_sequences=return_sequences,
-                                 dropout=self.dropout_fraction,
-                                 recurrent_dropout=self.recurrent_dropout_fraction,
-                                 input_shape=_rnn_input_shape)
+            layer = self.RNNCell(
+                layer_size,
+                return_sequences=return_sequences,
+                dropout=self.dropout_fraction,
+                recurrent_dropout=self.recurrent_dropout_fraction)
             layer = layer(prev_layer)
             prev_layer = layer
         for layer_size in self.dense_layer_sizes:
@@ -287,116 +341,3 @@ class DLDB(object):
                              name='target')(prev_layer)
         self.model = Model(inputs=inputs, outputs=output_layer)
         self.model.compile(optimizer=self.optimizer, loss=self.loss)
-
-    def _input_transform(self, fm, labels=None):
-        # Assume index in (instance_id, time) and index already sorted
-        fm = self._map_categorical_fm_to_int(fm)
-        inputs = {}
-        for i, f in enumerate(self.categorical_feature_names):
-            keras_name = self.name_mapping[f]
-            feature_max_vocab = len(self.categorical_vocab[f])
-            if self.categorical_max_vocab is not None:
-                feature_max_vocab = min(feature_max_vocab,
-                                        self.categorical_max_vocab)
-            vals = fm[[f]]
-            if vals.dropna().shape[0] != vals.shape[0]:
-                vals = vals.fillna(self.fill_vals[f])
-            inputs[keras_name] = vals
-        inputs = {k: self._sequences_from_fm(i)[:, :, 0]
-                  for k, i in inputs.items()}
-
-        if self.numeric_columns:
-            numeric_fm = fm[self.numeric_columns]
-            for f in self.numeric_columns:
-                vals = numeric_fm[f]
-                if vals.dropna().shape[0] != vals.shape[0]:
-                    numeric_fm[f] = vals.fillna(self.fill_vals[f])
-            numeric_fm = self.scaler.transform(numeric_fm)
-            numeric_fm = pd.DataFrame(numeric_fm, index=fm.index,
-                                      columns=self.numeric_columns)
-
-            numeric_inputs = self._sequences_from_fm(numeric_fm)
-            inputs[self.numeric_input_name] = numeric_inputs
-
-        if labels is not None:
-            if not self.regression:
-                labels = pd.Series(labels).astype(int)
-                if len(self.classes) > 2:
-                    labels = self.lb.transform(labels)
-            return inputs, labels
-        else:
-            return inputs
-
-    def _output_transform(self, predictions):
-        if not self.regression and len(self.classes) > 2:
-            predictions = np.array([self.lb.classes_[i]
-                                    for i in predictions.argmax(axis=1)])
-        return predictions
-
-    def _sequences_from_fm(self, fm):
-        instance_id_name = fm.index.names[0]
-        fm.reset_index(instance_id_name, drop=False, inplace=True)
-        fm.reset_index(drop=True, inplace=True)
-
-        instance_col = list(fm.columns).index(instance_id_name)
-        sequences = [list(group)
-                     for _, group in groupby(fm.values,
-                                             lambda row: row[instance_col])]
-        sequence_input = pad_sequences(sequences,
-                                       maxlen=self.max_values_per_instance,
-                                       padding='pre')
-        return sequence_input
-
-    def _map_categorical_fm_to_int(self, fm):
-        new_fm = fm.copy()
-        for f in self.categorical_feature_names:
-            numeric_series, new_mapping = self._map_categorical_series_to_int(
-                fm[f],
-                self.categorical_vocab.get(f, None))
-            new_fm[f] = numeric_series
-            self.categorical_vocab[f] = new_mapping
-        return new_fm
-
-    def _gen_categorical_mapping(self, fm):
-        categorical_vocab = {}
-        if self.categorical_max_vocab is None:
-            self.categorical_max_vocab = max(fm[f].dropna().nunique()
-                                             for f in fm)
-        for f in self.categorical_feature_names:
-            nan_val = str(uuid.uuid4())
-            val_counts = (fm[f].astype(str)
-                               .fillna(nan_val)
-                               .value_counts()
-                               .to_frame())
-            index_name = val_counts.index.name
-            if index_name is None:
-                if 'index' in val_counts.columns:
-                    index_name = 'level_0'
-                else:
-                    index_name = 'index'
-            val_counts.reset_index(inplace=True)
-            val_counts = val_counts.sort_values([f, index_name],
-                                                ascending=False)
-            val_counts.set_index(index_name, inplace=True)
-            full_mapping = val_counts.index.tolist()
-            unique = set(val_counts.head(self.categorical_max_vocab - 1).index.tolist())
-            unknown = [v for v in full_mapping if v not in unique]
-
-            mapping = {v: k + 1 for k, v in enumerate(unique)}
-            mapping.update({v: 0 for v in unknown})
-            mapping[nan_val] = -1
-            categorical_vocab[f] = mapping
-        return categorical_vocab
-
-    def _map_categorical_series_to_int(self, input_series,
-                                       mapping):
-        nan_val = [k for k, v in mapping.items()
-                   if v == -1][0]
-
-        input_series = input_series.astype(str).fillna(nan_val)
-
-        unique_vals = input_series.unique()
-        new_mapping = {u: 0 for u in unique_vals}
-        new_mapping.update(mapping)
-        numeric = input_series.map(new_mapping)
-        return numeric, new_mapping

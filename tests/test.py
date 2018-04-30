@@ -21,13 +21,13 @@ def test_ecommerce():
     es = make_ecommerce_entityset()
     cutoffs = es['log'].df[['session_id', 'datetime']]
     cutoffs = cutoffs.rename(columns={'session_id': 'id'})
-    fm, fl = ft.dfs(entityset=es,
+    ftens, fl = ft.dfs(entityset=es,
                     cutoff_time=cutoffs,
                     target_entity="sessions",
                     cutoff_time_in_index=True)
-    fm.sort_index(inplace=True)
+    ftens.sort_index(inplace=True)
 
-    ids = fm.index.get_level_values('id').drop_duplicates()
+    ids = ftens.index.get_level_values('id').drop_duplicates()
     n_instances = ids.shape[0]
 
     labels_binary = [i % 2 for i in range(n_instances)]
@@ -38,20 +38,20 @@ def test_ecommerce():
                            'label_regression': labels_regression},
                           index=ids)
 
-    fm = (fm.reset_index('id', drop=False)
+    ftens = (ftens.reset_index('id', drop=False)
             .merge(labels, left_on='id',
                    right_index=True,
                    how='left')
             .set_index('id', append=True)
           )
 
-    train_fm, test_fm = train_test_split(
-        fm, test_size=0.4, shuffle=False)
-    train_labels = train_fm[labels.columns]
-    test_labels = test_fm[labels.columns]
+    train_ftens, test_ftens = train_test_split(
+        ftens, test_size=0.4, shuffle=False)
+    train_labels = train_ftens[labels.columns]
+    test_labels = test_ftens[labels.columns]
     for c in labels.columns:
-        del train_fm[c]
-        del test_fm[c]
+        del train_ftens[c]
+        del test_ftens[c]
 
     scores = {}
     scoring_functions = {'label_regression': mean_absolute_error,
@@ -63,34 +63,34 @@ def test_ecommerce():
             regression=label_type == 'label_regression',
             classes=classes,
             categorical_max_vocab=10)
-        dl_model.compile(train_fm, fl)
-        dl_model.fit(train_fm,
+        dl_model.fit(train_ftens,
                      train_labels[label_type].values,
+                     fl=fl,
                      epochs=1,
                      batch_size=4)
-        predictions = dl_model.predict(test_fm)
+        predictions = dl_model.predict(test_ftens)
         score = scoring_functions[label_type](test_labels[label_type].values,
                                               predictions)
         scores[label_type] = score
     return scores
 
 
-def test_retail_binary(fm_file='retail_binary_files/fm.csv',
+def test_retail_binary(ftens_file='retail_binary_files/ftens.csv',
                        labels_file='retail_binary_files/labels.csv',
                        fl_file='retail_binary_files/fl.p'):
-    fm, labels, fl = construct_retail_example(fm_file, labels_file, fl_file)
-    baseline_fm = (fm.reset_index('customer_id', drop=False)
+    ftens, labels, fl = construct_retail_example(ftens_file, labels_file, fl_file)
+    baseline_ftens = (ftens.reset_index('customer_id', drop=False)
                      .drop_duplicates('customer_id', keep='last')
                      .set_index('customer_id'))
-    baseline_fm, baseline_fl = ft.encode_features(baseline_fm, fl)
-    baseline_fm, baseline_fl = remove_low_information_features(baseline_fm, baseline_fl)
-    train_customers, test_customers = train_test_split(baseline_fm.index.values, shuffle=True, test_size=0.1)
+    baseline_ftens, baseline_fl = ft.encode_features(baseline_ftens, fl)
+    baseline_ftens, baseline_fl = remove_low_information_features(baseline_ftens, baseline_fl)
+    train_customers, test_customers = train_test_split(baseline_ftens.index.values, shuffle=True, test_size=0.1)
     train_labels = labels.loc[train_customers]
     test_labels = labels.loc[test_customers]
-    train_fm = fm.loc[(train_customers, slice(None)), :]
-    test_fm = fm.loc[(test_customers, slice(None)), :]
-    baseline_train_fm = baseline_fm.loc[train_customers, :]
-    baseline_test_fm = baseline_fm.loc[test_customers, :]
+    train_ftens = ftens.loc[(train_customers, slice(None)), :]
+    test_ftens = ftens.loc[(test_customers, slice(None)), :]
+    baseline_train_fm = baseline_ftens.loc[train_customers, :]
+    baseline_test_fm = baseline_ftens.loc[test_customers, :]
 
     dl_model = DLDB(
         regression=False,
@@ -98,14 +98,13 @@ def test_retail_binary(fm_file='retail_binary_files/fm.csv',
         recurrent_layer_sizes=(32,),
         dense_layer_sizes=(32, 32),
         categorical_max_vocab=10)
-    dl_model.compile(train_fm, fl)
     dl_model.fit(
-            train_fm,
+            train_ftens,
             train_labels,
-            validation_split=0.1,
+            fl=fl,
             epochs=1,
             batch_size=32)
-    predictions = dl_model.predict(test_fm)
+    predictions = dl_model.predict(test_ftens)
     score = roc_auc_score(test_labels, predictions)
 
     baseline_scores = score_baseline_pipeline(baseline_train_fm,

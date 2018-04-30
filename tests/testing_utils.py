@@ -1,16 +1,15 @@
-from dldb import tdfs
 from labeling_utils import create_labels, sample_labels
 import pandas as pd
 import featuretools as ft
 import os
 
 
-def construct_retail_example(fm_file='retail_binary_files/fm.csv',
+def construct_retail_example(ftens_file='retail_binary_files/ftens.csv',
                              labels_file='retail_binary_files/labels.csv',
                              fl_file='retail_binary_files/fl.p'):
     es = ft.demo.load_retail()
-    if os.path.exists(fm_file):
-        fm = pd.read_csv(fm_file, index_col=['customer_id', 'time'], parse_dates=['time'])
+    if os.path.exists(ftens_file):
+        ftens = pd.read_csv(ftens_file, index_col=['customer_id', 'time'], parse_dates=['time'])
         labels = pd.read_csv(labels_file, index_col='customer_id')['label']
         fl = ft.load_features(fl_file, es)
     else:
@@ -27,14 +26,14 @@ def construct_retail_example(fm_file='retail_binary_files/fm.csv',
         sampled = sampled[['customer_id', 'time', 'label']]
         sampled = sampled.sample(300)
 
-        fm, fl = tdfs(target_entity='customers',
+        ftens, fl = ft.tdfs(target_entity='customers',
                       entityset=es,
                       cutoffs=sampled,
                       window_size='30d',
                       num_windows=5,
                       verbose=True)
 
-        fm = (fm.reset_index('customer_id', drop=False)
+        ftens = (ftens.reset_index('customer_id', drop=False)
                 .reset_index(drop=False)
                 .merge(sampled[['customer_id', 'label']],
                        on='customer_id',
@@ -42,16 +41,16 @@ def construct_retail_example(fm_file='retail_binary_files/fm.csv',
                 .set_index('customer_id')
                 .set_index('time', append=True))
 
-        labels = (fm['label']
+        labels = (ftens['label']
                   .reset_index('customer_id', drop=False)
                   .drop_duplicates('customer_id')
                   .set_index('customer_id'))
-        del fm['label']
-        fm.to_csv(fm_file)
+        del ftens['label']
+        ftens.to_csv(ftens_file)
         labels.to_csv(labels_file)
         labels = labels['label']
         ft.save_features(fl, fl_file)
-    return fm, labels, fl
+    return ftens, labels, fl
 
 
 if __name__ == '__main__':
