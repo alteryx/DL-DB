@@ -24,7 +24,7 @@ See docstrings in `dldb/preprocessing.py` and `dldb/dldb.py`
 
 # Graphic
 
-[DL Layers Graphic](dldb_fig.png)
+![DL Layers Graphic](dldb_fig.png)
 
 # Usage
 ### `DLDB` class
