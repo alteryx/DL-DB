@@ -6,7 +6,7 @@ Deep learning for time-varying multi-entity datasets
 
 You should be able to just run:
 ```
-pip install -e .
+pip install dldb
 ```
 
 If that fails due to Tensor Flow, please visit [https://www.tensorflow.org/install/](https://www.tensorflow.org/install/) and follow their instructions for installing Tensor Flow on your system.
