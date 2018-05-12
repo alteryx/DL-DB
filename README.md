@@ -1,6 +1,11 @@
 # DLDB
 
-Deep learning for time-varying multi-entity datasets
+Deep learning for time-varying multi-entity relational datasets. 
+
+DLDB stands for Deep Learning for databases.  These are the datasets typically stored in relational databases, and are the most commonly encountered datasets in industry and several domains such as - healthcare, cybersecurity, retail. Several Kaggle competitions have this type of data. 
+
+
+![DL Layers Graphic](dldb_fig.png)
 
 # Installation
 
@@ -22,9 +27,6 @@ pip install gprc==1.9.1 tensorflow
 
 See docstrings in `dldb/preprocessing.py` and `dldb/dldb.py`
 
-# Graphic
-
-![DL Layers Graphic](dldb_fig.png)
 
 # Usage
 ### `DLDB` class
